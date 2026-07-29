@@ -1,0 +1,50 @@
+schema_version: 1
+
+project:
+  name: example-project
+
+workspace:
+  strategy: git-worktree
+  root: .revanent/worktrees
+  preserve_failed: true
+
+builder:
+  provider: opencode
+  model: configured-local-model
+  max_attempts: 3
+  timeout_seconds: 1800
+
+reviewer:
+  provider: codex
+  mode: review_then_repair
+  max_reviews: 3
+  max_repairs: 2
+  timeout_seconds: 1800
+
+validation:
+  commands:
+    - name: tests
+      command: [uv, run, pytest]
+    - name: lint
+      command: [uv, run, ruff, check, .]
+    - name: format
+      command: [uv, run, ruff, format, --check, .]
+    - name: types
+      command: [uv, run, mypy, src, tests]
+
+budgets:
+  max_total_minutes: 90
+  max_remote_tokens: null
+  max_estimated_cost_usd: null
+
+policy:
+  allowed_paths: [src/**, tests/**, docs/**]
+  forbidden_paths: [.git/**, .env, '**/secrets/**']
+  allow_codex_write_repair: true
+  allow_network: false
+  allow_push: false
+  allow_merge: false
+
+reporting:
+  directory: .revanent/runs
+  formats: [json, markdown]

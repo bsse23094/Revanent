@@ -1,0 +1,3 @@
+# Project-local Codex defaults. Provider invocations remain explicit and bounded.
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
