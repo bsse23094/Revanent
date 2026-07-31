@@ -55,3 +55,59 @@ new continuation record only where later policy explicitly permits it.
 Approval additionally requires successful required validation, parseable schema,
 no unresolved critical/high finding, justified scope, consistent generated/lock
 files, complete evidence, and no unexplained dirty state.
+
+## Implemented transition contract
+
+P1-001 implements the table above in one immutable mapping. `transition_run` accepts a
+current immutable `Run`, destination, aware UTC timestamp, bounded reason, optional
+bounded metadata, and approval evidence only when entering `APPROVED`. It returns a
+new fully validated run and a matching `StateTransition`; the input run is unchanged.
+Metadata keys are unique and sorted for deterministic serialization. A timestamp may
+not precede the current durable timestamp.
+
+Direct assignment is blocked by frozen models, and `Run.model_copy(update=...)` is
+disabled because Pydantic copy updates do not validate. Deserializing `APPROVED`
+without complete passing evidence is also rejected. P1-002 wraps accepted transitions
+in append-only, per-run sequenced `RunEvent` records and atomically commits the event
+with the new current state. Storage re-invokes this authoritative transition function
+to verify the supplied snapshot; it does not define an independent transition table.
+
+P2-002 supplies the typed repository inspection and owned-worktree primitive required
+by `WORKSPACE_PREPARING`: clean source, exact base, ownership creation, live verification,
+partial preservation, and safe cleanup outcomes are explicit. No orchestration service
+invokes it yet, and P2-002 does not add or bypass state transitions. A later orchestrator
+must persist its durable boundary before advancing to `BUILDING` and must map ownership
+ambiguity to `BLOCKED` rather than guessing recovery.
+
+P4-001 supplies immutable validation evidence and a pure local review-gate decision that
+P4-002 orchestration uses. Neither `ValidationRunner` nor `ReviewGate` calls
+`transition_run`, persists state, or changes a `Run`.
+
+P4-002 implements the finite coordinator without changing the transition table. CREATED,
+PLANNING, and CONTEXT_PREPARING advance through durable transition events before workspace
+preparation. Worktree creation, builder, validation, reviewer, and repair execution each
+have append-only intent/outcome evidence under the current run revision/state. The
+coordinator passes only a locally constructed P4-001 `ApprovalGate` to
+`REVIEWING -> APPROVED`; provider verdict alone remains insufficient.
+
+Every build and repair attempt that completed or may have mutated transitions to
+VALIDATING. Passing required validation enters REVIEWING. Ordinary validation/review
+defects enter REPAIRING only while deterministic policy, scope, reconciliation, capability,
+authorization, and limits permit it. Invalid/timed-out validation evidence fails; missing
+required tooling blocks. Repair returns only to VALIDATING. Attempt counters increment on
+the accepted phase-exit transition and cannot exceed immutable run budgets.
+
+Terminal mapping follows both policy and the authoritative edge set. Internal/invalid or
+exhausted outcomes use FAILED where permitted. Missing dependencies, ownership ambiguity,
+unresolved recovery, absent authority, and early-phase limit exhaustion use BLOCKED.
+Cancellation from any nonterminal state preserves attempts and enters CANCELLED through
+`transition_run`; a reviewer response normalized as cancelled takes cancellation precedence
+over the review gate's conservative blocked classification. Terminal calls return the
+stored terminal result and never transition.
+
+Crash continuation does not add resume edges. A persisted outcome at the current
+state/revision is consumed without reinvocation. Intent without outcome is reconciled;
+live workspace evidence must match the durable run, source/target paths, branch, and
+repository identity, while mismatches are `INCOMPATIBLE`. Ambiguous mutating work blocks
+rather than replaying. A Phase-6 resume command will call these library semantics and must
+not transition terminal runs or invent a second table.

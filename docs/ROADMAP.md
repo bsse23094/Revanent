@@ -36,3 +36,34 @@ but scope expansion requires an updated package and project state.
 
 Package briefs live in `docs/work-packages/`. Each is revalidated against repository
 evidence before its status changes to `IN_PROGRESS`.
+
+## Verified progress
+
+- P0-001 — COMPLETE 2026-07-29.
+- P1-001 — COMPLETE 2026-07-30; versioned configuration/domain schemas and the central
+  state machine are implemented and verified.
+- P1-002 — COMPLETE 2026-07-30; durable SQLite runs, append-only events, atomic
+  transitions, migrations, and deterministic reload achieve the Phase 1 exit gate.
+- P2-001 - COMPLETE 2026-07-30; typed command contracts, explicit executable/path/
+  environment/resource policies, bounded redacted execution, cancellation, and
+  adversarial Windows coverage establish the controlled-execution half of Phase 2.
+- P2-002 - COMPLETE 2026-07-30; deterministic Git inspection, protected dedicated
+  branches, versioned ownership evidence, verified non-force worktree creation/removal,
+  partial/stale preservation, and adversarial real-repository Windows coverage complete
+  the Phase 2 exit gate. Portable branches run in the Windows/Linux CI matrix.
+- P3-001 - COMPLETE 2026-07-30; strict versioned agent contracts, exact correlation,
+  bounded untrusted-output parsing, typed normalized failures/artifact references, and
+  a finite deterministic fake adapter are implemented without live-provider execution.
+- P3-002 - COMPLETE 2026-07-30; frozen version/help capability detection, OpenCode
+  BUILDER, separated Codex read-only REVIEWER/explicit REPAIRER adapters, strict JSONL
+  translation, and finite fake-executable integration complete the Phase 3 exit gate.
+- P4-001 - COMPLETE 2026-07-30; immutable validation plans/results, deterministic
+  `CommandRunner` execution, aggregate replay, strict structured review correlation, and
+  local-only approval computation establish the gates needed by Phase 4 orchestration.
+- P4-002 - COMPLETE 2026-07-31; provider-neutral finite orchestration, append-only durable
+  attempt evidence, revision-guarded side-effect boundaries, worktree reconciliation,
+  deterministic local/Codex repair selection, cancellation, exact limits, and fake-first
+  crash/restart E2E coverage complete the Phase 4 exit gate.
+
+Phase 4 is complete. P5-001 deterministic context selection and manifests are next.
+No live model call is claimed.
