@@ -4,13 +4,16 @@ Revanent is a local-first, model-agnostic software-engineering orchestrator. It
 delegates bounded implementation to a local coding agent, runs deterministic
 validation, and uses Codex as a structured review and repair gate.
 
-The Phase 1 through Phase 4 libraries are complete:
+The Phase 1 through Phase 5 foundation libraries are complete:
 versioned configuration/domain schemas, the central state machine, durable SQLite
 run/event primitives, bounded local execution, deterministic Git inspection, and
 ownership-verified isolated worktrees, deterministic validation/review gates, and the
-finite fake-first durable orchestration/repair service are implemented. User-facing
-run/resume commands remain planned. The executable surface remains the foundation CLI
-and doctor.
+finite fake-first durable orchestration/repair service. Deterministic context packages select
+bounded, provenance-labelled source/evidence with metadata-only manifests. Durable telemetry
+keeps local bytes, measured duration, provider-reported tokens, estimates, unavailable values,
+and unresolved reservations distinct while atomically enforcing supported local budgets.
+User-facing run/resume commands remain planned. The executable surface remains the foundation
+CLI and doctor.
 
 ## Development
 

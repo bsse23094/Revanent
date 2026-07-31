@@ -154,6 +154,29 @@ timeout do. Instances have isolated counters and a lock. Re-instantiating an ada
 over the same scenario is deterministic in-memory replay, not durable replay storage.
 See ADR-0006.
 
+## Context boundary
+
+`revanent.ports.context` owns immutable strict schema-version-1 context requests, typed
+discovery evidence, candidates, items, exclusions, packages, manifests, failures, and the
+selector protocol. The local `revanent.context` implementation consumes only explicit task,
+changed/diff, validation, review, attempt, repair-decision, governing-document, and approved
+artifact evidence. It expands direct Python imports and exact `test_<module>.py` conventions
+under independent depth/count/traversal bounds; it performs no semantic search, target import,
+provider call, subprocess, Git command, or network request.
+
+TaskSpecification allowed/forbidden scope is authoritative and forbidden patterns win. One
+reader owns all content access, resolved structural containment, link/junction refusal,
+regular-file checks, bounded reads, and before/after identity/size/mtime consistency. Selection
+then applies binary/UTF-8/secret policy, injected redaction, role-aware required/preferred/
+optional priority, deterministic UTF-8 truncation, and same-authority/trust content
+deduplication. Every item keeps source, authority, trust, target role, inclusion reasons,
+correlations, byte counts, redaction/truncation state, safe digests, and duplicate aliases.
+
+`ContextManifest` is metadata-only and canonical: it contains no absolute root, raw provider
+payload, context body, token, or cost field. `ContextPackage` holds the bounded current-process
+bodies separately and projects them through the existing `AgentRequest.context` references;
+providers only format validated references inside their adapters. See ADR-0010.
+
 ## Safe Git and worktree boundary
 
 `revanent.ports.git` owns immutable version-1 repository identity/status/snapshot,
@@ -214,8 +237,8 @@ state or duplicates the transition table.
 Every worktree, builder, validation, reviewer, or repair side effect has a strict,
 versioned attempt model. The coordinator verifies current run/worktree assumptions,
 appends a stable intent under the current revision/state, rechecks run currency, invokes
-once, then appends the normalized outcome. Agent public text/diagnostics/usage and command
-stream text are not embedded in the journal; bounded structured evidence and validated
+once, then appends the normalized outcome. Agent public text/diagnostics and command stream
+text are not embedded in the journal; bounded structured usage, evidence, and validated
 artifact references remain. Repository source remains protected by P2-002 and the task
 worktree is live-verified before each risky phase. The coordinator never cleans it.
 
@@ -238,8 +261,9 @@ automatic continuation. Reviewer cancellation has terminal cancellation preceden
 the review gate's conservative blocked classification. This is at-most-once initiation
 with durable reconciliation, not exactly-once execution.
 
-The implemented SQLite schema version 2 has four tables: ordered migration history,
-revisioned current runs, append-only run events, and append-only orchestration records.
+The implemented SQLite schema version 4 has seven tables: ordered migration history,
+revisioned current runs, append-only run events/orchestration records, and append-only
+usage records, budget reservations, and budget settlements.
 Complete bounded domain JSON is
 stored alongside normalized identity/version/state/timestamp/order columns and is
 always reloaded through canonical Pydantic validation. Database checks enforce JSON
@@ -256,6 +280,35 @@ per-run ordering and stage constraints. Stable event/record IDs support an immed
 repeated identical boundary without duplication. Schema initialization is idempotent and
 transactionally applies the inspectable forward-only migration list. Newer or malformed
 schema histories and corrupt payloads fail explicitly without automatic repair.
+
+Migration 3 transactionally rebuilds only the append-only orchestration table constraint to
+admit `CONTEXT` attempt evidence, copies all existing P4 rows, and recreates its index and
+append-only triggers. Context intents and metadata-only manifest outcomes are revision/state
+guarded like other attempts. Selected bodies never enter SQLite. A current-process duplicate
+uses its validated package; process continuation re-reads authorized inputs and must reproduce
+the durable manifest before any provider invocation.
+
+## Usage telemetry and budgets
+
+P5-002 adds provider-neutral version-1 usage, provenance, policy, reservation, settlement,
+and decision contracts. Context bytes and validation duration are `MEASURED`; structured
+provider tokens are `PROVIDER_REPORTED`; configured Decimal cost calculations are
+`ESTIMATED`; absent metrics are numeric-free `UNAVAILABLE`. `UNRESOLVED` is a separate
+reservation lifecycle state retaining capacity when launch or completion is ambiguous.
+Local bytes are never token estimates, and estimated cost is not actual billing.
+
+Every applicable agent role and validation persists intent before atomic reservation,
+invokes only after reservation commit, persists its normalized outcome, and then settles.
+Validation uses a derived plan that never increases command timeouts or exceeds remaining
+whole-second allowance. Actual duration overage is retained and blocks later consumption.
+The state machine remains attempt authority; telemetry derives attempt usage from durable
+activity rather than maintaining a second run counter.
+
+Migration 4 stores metadata only. `reserve_if_allowed` and `settle_reservation` run under
+`BEGIN IMMEDIATE`, include active reservations, use exact integer/Decimal arithmetic, and
+make identical retries idempotent while rejecting payload conflicts. Restart settlement
+reuses persisted outcomes without provider/validator replay. Missing trusted outcomes become
+`UNRESOLVED`; there is no time-based expiry. See ADR-0011.
 
 P4-002 proves close/reopen outcome reuse, exact worktree-creation reconciliation (including
 another-run refusal), in-flight reviewer cancellation, refusal to replay incomplete

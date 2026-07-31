@@ -29,7 +29,8 @@ but scope expansion requires an updated package and project state.
 - **Phase 2:** Windows/POSIX temporary-repository tests prove safe command/worktree behavior.
 - **Phase 3:** fake outcomes are deterministic; unavailable live providers yield actionable blockers.
 - **Phase 4:** complete fake loop passes; approval cannot bypass validation; limits hold.
-- **Phase 5:** context is deterministic and measurably smaller without losing required files.
+- **Phase 5:** COMPLETE — context is deterministic and measurably bounded without losing
+  required files; provenance-labelled telemetry and atomic local budget enforcement are durable.
 - **Phase 6:** new repositories initialize and interrupted runs resume with understandable reports.
 - **Phase 7:** one evidenced local-builder-to-Codex run; recovery paths pass; no high security risks.
 - **Phase 8:** benchmark results and reproducible release artifact meet the release checklist.
@@ -65,5 +66,6 @@ evidence before its status changes to `IN_PROGRESS`.
   deterministic local/Codex repair selection, cancellation, exact limits, and fake-first
   crash/restart E2E coverage complete the Phase 4 exit gate.
 
-Phase 4 is complete. P5-001 deterministic context selection and manifests are next.
-No live model call is claimed.
+P5-001 deterministic context selection/manifests and P5-002 usage telemetry/budget enforcement
+are complete. Phase 5 closed on 2026-07-31 with SQLite schema 4, ADR-0011, real local
+concurrency/adversarial coverage, and no live model call. P6-001 is next.

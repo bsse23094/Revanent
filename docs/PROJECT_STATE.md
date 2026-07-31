@@ -4,9 +4,8 @@ Last updated: 2026-07-31
 
 ## Current milestone
 
-Phase 4 - Orchestration and Repair is complete. P4-001 validation/review gates and
-P4-002 bounded durable orchestration, reconciliation, and explicit repair policy are
-implemented and verified. Phase 5 is next; P5-001 context selection is not started.
+Phase 5 is complete. P5-001 deterministic context selection/manifests and P5-002 usage
+telemetry/budget enforcement are complete. Phase 6 is next.
 
 ## Completed work packages
 
@@ -19,10 +18,80 @@ implemented and verified. Phase 5 is next; P5-001 context selection is not start
 - P3-002 - OpenCode and Codex Capability Detection and Adapters (COMPLETE 2026-07-30).
 - P4-001 - Validation and Structured Review Gates (COMPLETE 2026-07-30).
 - P4-002 - Bounded Orchestration and Explicit Repair Policy (COMPLETE 2026-07-31).
+- P5-001 - Deterministic Context Selection and Manifest (COMPLETE 2026-07-31).
+- P5-002 - Usage Telemetry and Budget Enforcement (COMPLETE 2026-07-31).
 
 ## Active work package
 
-None. P5-001 is the next planned package.
+P6-001 - Configuration, Initialization, Doctor, and Provider-Detection UX.
+
+## P5-002 delivered
+
+- Strict provider-neutral schema-v1 usage, provenance, unit, policy, reservation, settlement,
+  decision, snapshot, stable-ID, canonical-serialization, and repository contracts.
+- SQLite migration 4 with append-only metadata-only usage/reservation/settlement tables and
+  atomic `BEGIN IMMEDIATE` reservation and usage-plus-settlement boundaries. Exact integer and
+  Python `Decimal` arithmetic, active-capacity inclusion, identical retry idempotency, explicit
+  conflicts, rollback, close/reopen durability, and stale-revision refusal are verified.
+- Builder, reviewer, both repair roles, and validation use durable intent, atomic reservation,
+  invocation, persisted normalized outcome, then atomic settlement. The state machine remains
+  authoritative for `Run` counters and authority; telemetry derives role attempt usage.
+- Validation whole-second timeout capping never increases a command. Trusted elapsed duration
+  is `MEASURED`; overage is stored without clamping and blocks later consumption.
+- Structured provider tokens are `PROVIDER_REPORTED`; absent provider metrics and absent pricing
+  are numeric-free `UNAVAILABLE`; Decimal estimates require explicit estimator identity.
+  `UNRESOLVED` is separate lifecycle evidence retaining ambiguous capacity without expiry.
+- Restart settles persisted agent/validation outcomes without replay. Stale coordinators write
+  nothing. Hard token/cost budgets without a finite per-invocation ceiling fail before launch
+  and consume no attempt.
+- Real-file SQLite thread/barrier races cover final attempt/token/duration/cost capacity,
+  cross-role operation identities, identical/conflicting reservation and settlement, rollback,
+  stale state, and deterministic persistence. Privacy/provenance/architecture tests reject raw
+  content and forbidden dependencies. ADR-0011 records the decision.
+- All verification is fake/local: temporary SQLite, fake agents, controlled local commands, and
+  existing temporary Git fixtures. No network, live provider, current pricing, billing, Git
+  mutation, commit, push, merge, or publication occurred.
+
+## P5-002 verified commands
+
+- `uv sync --dev` — exit 0; 27 packages resolved and audited.
+- `uv run ruff format --check .` — exit 0; 156 files already formatted.
+- `uv run ruff check .` — exit 0; all checks passed.
+- `uv run mypy src tests` — exit 0; no issues in 109 source/test files.
+- Focused telemetry/storage/orchestration/concurrency/adversarial suite — exit 0;
+  112 passed in 13.02 seconds.
+- `uv run pytest tests/unit tests/contract tests/integration tests/e2e` — exit 0;
+  619 passed and one expected Windows filename skip in 147.00 seconds.
+- Final post-audit `uv run pytest` — exit 0; 619 passed and one expected Windows filename
+  skip in 156.20 seconds on Windows AMD64, CPython 3.12.11.
+- `uv run revanent doctor` — exit 0; Python 3.12.11, Windows AMD64, uv 0.7.13,
+  Git 2.54.0.windows.1, OpenCode accurately unavailable, and installed Codex
+  `0.146.0-alpha.9.2` review/repair surfaces compatible from local detection only.
+- Focused architecture/security scans and `git diff --check` — exit 0; no boundary defect,
+  live provider/network/pricing call, or Git mutation/publication path was introduced. Git
+  reported only expected LF-to-CRLF working-tree normalization warnings.
+
+## P5-001 delivered
+
+- Strict provider-neutral context port contracts, typed multi-source discovery, exact scope
+  precedence, bounded Python dependency/test expansion, approved artifact validation, and
+  explicit required/preferred/optional evidence.
+- One bounded reader for regular-file, resolved-containment, link/junction, before/after
+  metadata, finite race retry, size, binary, and UTF-8 checks. Repository-wide fuzzy search,
+  target imports, subprocess, Git, network, and live providers are absent.
+- Existing redaction plus token-URL support, conservative secret-file/private-key refusal,
+  distinct authority/trust/provenance labels, deterministic UTF-8 truncation, content
+  deduplication with aliases, and exact local byte accounting without token/cost claims.
+- Metadata-only canonical manifests and bounded in-memory packages projected through the
+  existing AgentRequest context field. Context bodies are never written to normalized SQLite.
+- P4 CONTEXT_PREPARING integration with durable intent/manifest outcomes, provider blocking on
+  incomplete/unsafe/mismatched context, context-safe stale/cancellation boundaries, and SQLite
+  forward migration 3 preserving the append-only P4 journal while adding CONTEXT evidence.
+- ADR-0010 and focused unit/contract/integration/E2E coverage for discovery, scope, Windows
+  junctions, races, credentials, prompt injection, artifacts, limits, manifests, persistence,
+  and provider-prelaunch refusal. All evidence remains fake/local. `uv sync --dev`, format,
+  Ruff, mypy, focused P5 (96 passed), grouped canonical, and top-level full suite each passed;
+  the two full suites each reported 575 passed and one expected Windows filename skip.
 
 ## P4-002 delivered
 
@@ -281,13 +350,22 @@ fake-executable integration; installed Codex evidence is version/help-only detec
 
 ## Known limitations
 
-Orchestration is a library service; P6 still owns user-facing run/resume/status/report
-commands and safe configuration wiring. P5 context selection and usage/cost telemetry are
-not implemented. The supplied `LocalEvidenceCollector` remains a construction-time port;
-P6 must wire a reviewed production collector. Agent artifacts have no general run artifact
-store. A durable intent cannot prove whether an external program launched before a host
-crash, so ambiguous mutating attempts are preserved and blocked for human recovery rather
-than replayed. Exactly-once external execution is not claimed.
+Orchestration and telemetry remain library services; P6 owns user-facing initialization,
+configuration, provider detection, run/resume/status/report commands, and safe production
+wiring. The supplied `LocalEvidenceCollector` remains a construction-time port, and P6 must
+wire a reviewed production collector. Agent artifacts have no general run artifact store.
+
+Provider usage depends on validated structured reporting; missing token metrics remain
+numeric-free `UNAVAILABLE`. No current pricing service exists, so estimated cost is likewise
+unavailable unless an explicit versioned estimator is supplied. Local context bytes are not
+provider tokens. A finite token/cost budget fails closed before invocation when no finite
+per-invocation ceiling can be enforced, but Revanent cannot guarantee provider-side stopping
+beyond a ceiling a provider actually supports.
+
+A durable intent cannot prove whether an external program launched before a host crash, so
+ambiguous mutating attempts are preserved and blocked for human recovery rather than
+replayed. Such reservation capacity remains `UNRESOLVED` without time-based expiry.
+Exactly-once external execution is not claimed.
 
 OpenCode is absent locally and its supported surface is fake-verified only. Codex help
 flags reduce authority but do not prove operating-system sandboxing. No live/provider-model
@@ -319,8 +397,8 @@ scope until later packages.
 
 ## Blockers
 
-None for starting P5-001. OpenCode remains unavailable locally but is an accurately typed
-optional capability state, not a blocker to deterministic context-package implementation.
+None. OpenCode remains unavailable locally but is an accurately typed optional capability
+state, not a blocker to P6-001 configuration and provider-detection work.
 
 ## Architectural decisions
 
@@ -338,22 +416,20 @@ optional capability state, not a blocker to deterministic context-package implem
   owned local approval facts, and pure fail-closed review-gate decisions.
 - ADR-0009: Append-only attempt evidence, revision-guarded at-most-once initiation,
   explicit reconciliation, bounded deterministic repair selection, and local authority.
+- ADR-0010: Typed deterministic context discovery, scope/path/race/secret/provenance policy,
+  metadata-only manifests, AgentRequest projection, and durable CONTEXT_PREPARING evidence.
+- ADR-0011: Durable metadata-only usage telemetry, exact provenance and units, atomic
+  reservation/settlement, conservative recovery, and fail-closed budget enforcement.
 
 ## Next recommended work package
 
-P5-001 - Deterministic Context Selection and Manifest. Use GPT-5.6 Terra at high reasoning
-to add bounded, deterministic, secret-aware context manifests behind provider-neutral
-ports while preserving the completed P4 durable coordinator. Use Sol review for path/scope,
-secret-exclusion, ordering, truncation, and prompt-injection boundaries.
+P6-001 - Configuration, Initialization, Doctor, and Provider-Detection UX.
 
 ## Exact next-session bootstrap instruction
 
-Continue Revanent from the completed and verified Phase 4/P4-002 baseline. Read
-`AGENTS.md`, authoritative architecture/security/testing/state documents, ADR-0006
-through ADR-0009, and `docs/work-packages/P5-001-context-packages.md`; inspect and preserve
-the cumulative Git state, then verify the documented 537-pass/one-Windows-skip baseline.
-Execute P5-001 only: implement deterministic bounded context selection and a versioned
-manifest, enforce repository scope and secret exclusion, integrate through provider-neutral
-contracts without weakening P4 orchestration, and add fake-first adversarial tests. Do not
-add usage telemetry, user-facing run/resume/report CLI, live providers/network calls,
-destructive Git, push, merge, or publication.
+Continue Revanent from the completed and verified Phase 5/P5-002 baseline. Implement P6-001
+Configuration, Initialization, Doctor, and Provider-Detection UX. Preserve the strict typed
+boundaries, metadata-only telemetry, local-first safety, non-overwrite behavior, and cumulative
+dirty worktree. Add idempotent initialization, validated configuration precedence, actionable
+doctor/provider detection, CLI tests and authoritative documentation, then run every canonical
+gate. Do not call live providers/network or mutate/publish Git history.

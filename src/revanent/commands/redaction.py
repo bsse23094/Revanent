@@ -16,6 +16,10 @@ _CREDENTIAL_ASSIGNMENT = re.compile(
     r"password|passwd|private[_-]?key|secret|token)\b(?:[\"'])?\s*[:=]\s*)"
     r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s,;]+)"
 )
+_TOKEN_URL_PARAMETER = re.compile(
+    r"(?i)([?&](?:access[_-]?token|api[_-]?key|auth|credential|password|secret|token)=)"
+    r"([^&#\s]+)"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +56,9 @@ class Redactor:
             redacted = redacted.replace(secret, REDACTION_MARKER)
         redacted = _AUTHORIZATION.sub(lambda match: f"{match.group(1)}{REDACTION_MARKER}", redacted)
         redacted = _CREDENTIAL_ASSIGNMENT.sub(
+            lambda match: f"{match.group(1)}{REDACTION_MARKER}", redacted
+        )
+        redacted = _TOKEN_URL_PARAMETER.sub(
             lambda match: f"{match.group(1)}{REDACTION_MARKER}", redacted
         )
         if truncated:

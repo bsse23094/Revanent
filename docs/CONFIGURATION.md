@@ -47,3 +47,18 @@ settings; they are not accepted as unknown schema-v1 keys today.
 
 Schema evolution uses explicit versions and migration/rejection rules documented in
 an ADR. Older run state is never silently interpreted as the latest schema.
+
+P5-001 does not add YAML keys. Library composition constructs strict context requests from the
+validated `TaskSpecification`, durable run/work-package identity, verified source root, typed
+local evidence, injected timestamp, and explicit `ContextLimits`. Unknown context fields or
+versions are rejected. P6-001 may expose reviewed safe context-limit settings later only through
+an explicit configuration-schema change; repository files and provider output cannot override
+scope, trust, artifact roots, secret policy, or required-evidence behavior.
+
+P5-002 enforces the existing `budgets.max_remote_tokens` and
+`budgets.max_estimated_cost_usd` values as optional hard limits. Absence means unlimited, not
+zero. Because schema version 1 has no reviewed finite per-invocation token/cost ceiling or rate
+table, setting either hard external limit currently fails closed before agent invocation and
+consumes no attempt. No pricing is embedded or fetched, and repository/provider data cannot
+override these values. Duration and role-attempt limits continue to come from the immutable
+durable `Run` budget snapshot. P6-001 must preserve these semantics when wiring configuration.

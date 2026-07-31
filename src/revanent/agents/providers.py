@@ -178,7 +178,7 @@ def executable_unavailable(result: CommandResult) -> bool:
 
 
 def deterministic_prompt(request: AgentRequest, *, mode: str) -> bytes:
-    """Build a bounded deterministic prompt without repository contents or environment values."""
+    """Build a bounded deterministic prompt from authorized request context only."""
     document = {
         "authority": {
             "mode": mode,
@@ -198,7 +198,9 @@ def deterministic_prompt(request: AgentRequest, *, mode: str) -> bytes:
             "allowed_scope": [item.root for item in request.allowed_scope],
             "forbidden_scope": [item.root for item in request.forbidden_scope],
             "workspace_reference_id": request.workspace.reference_id,
-            "context_references": [item.reference_id for item in request.context],
+            "context_references": [
+                item.model_dump(mode="json", exclude_none=True) for item in request.context
+            ],
             "prior_finding_references": [item.reference_id for item in request.prior_findings],
             "expected_response_schema_version": request.response_contract.schema_version,
         },

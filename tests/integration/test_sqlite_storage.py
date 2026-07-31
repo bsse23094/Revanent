@@ -160,10 +160,12 @@ def test_fresh_and_repeated_initialization_records_schema_version_once(tmp_path:
 
     assert path.is_file()
     assert first == second
-    assert first.schema_version == 2
+    assert first.schema_version == 4
     assert first.migrations == (
         "initial_run_state_and_events",
         "append_only_orchestration_journal",
+        "context_manifest_orchestration_evidence",
+        "append_only_usage_and_budget_reservations",
     )
     assert first.foreign_keys_enabled is True
     assert [tuple(row) for row in first_history] == [tuple(row) for row in second_history]
@@ -178,16 +180,30 @@ def test_version_1_database_migrates_forward_without_changing_existing_runs(
     run = _run()
     repository.create_run(run)
     with _raw_connect(path) as connection:
+        for trigger in (
+            "trg_usage_records_no_delete",
+            "trg_usage_records_no_update",
+            "trg_budget_reservations_no_delete",
+            "trg_budget_reservations_no_update",
+            "trg_budget_settlements_no_delete",
+            "trg_budget_settlements_no_update",
+        ):
+            connection.execute(f"DROP TRIGGER {trigger}")
+        connection.execute("DROP INDEX idx_usage_records_run")
+        connection.execute("DROP INDEX idx_budget_reservations_run")
+        connection.execute("DROP TABLE budget_settlements")
+        connection.execute("DROP TABLE budget_reservations")
+        connection.execute("DROP TABLE usage_records")
         connection.execute("DROP TRIGGER trg_orchestration_no_delete")
         connection.execute("DROP TRIGGER trg_orchestration_no_update")
         connection.execute("DROP INDEX idx_orchestration_run_attempt")
         connection.execute("DROP TABLE orchestration_records")
-        connection.execute("DELETE FROM schema_migrations WHERE version = 2")
+        connection.execute("DELETE FROM schema_migrations WHERE version >= 2")
 
     status = SQLiteRunRepository(path).initialize()
 
-    assert status.schema_version == 2
-    assert status.migrations[-1] == "append_only_orchestration_journal"
+    assert status.schema_version == 4
+    assert status.migrations[-1] == "append_only_usage_and_budget_reservations"
     assert SQLiteRunRepository(path).get_run(run.id) == StoredRun(run=run, revision=0)
 
 
@@ -199,13 +215,13 @@ def test_newer_schema_version_is_rejected_without_modification(tmp_path: Path) -
         )
         connection.execute(
             "INSERT INTO schema_migrations VALUES (?, ?, ?)",
-            (3, "future", "2026-07-30T12:00:00Z"),
+            (5, "future", "2026-07-30T12:00:00Z"),
         )
 
     with pytest.raises(UnsupportedSchemaVersionError) as captured:
         SQLiteRunRepository(path).initialize()
 
-    assert captured.value.actual == 3
+    assert captured.value.actual == 5
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone() == (1,)
 

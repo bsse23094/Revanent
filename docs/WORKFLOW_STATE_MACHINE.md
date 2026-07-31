@@ -27,6 +27,7 @@ stateDiagram-v2
     CREATED --> PLANNING
     PLANNING --> CONTEXT_PREPARING
     CONTEXT_PREPARING --> WORKSPACE_PREPARING
+    CONTEXT_PREPARING --> FAILED: invalid internal context request/evidence
     WORKSPACE_PREPARING --> BUILDING
     BUILDING --> VALIDATING
     VALIDATING --> REVIEWING: required checks pass
@@ -111,3 +112,26 @@ live workspace evidence must match the durable run, source/target paths, branch,
 repository identity, while mismatches are `INCOMPATIBLE`. Ambiguous mutating work blocks
 rather than replaying. A Phase-6 resume command will call these library semantics and must
 not transition terminal runs or invent a second table.
+
+P5-001 gives CONTEXT_PREPARING its concrete durable boundary. For each required target role,
+the coordinator appends a revision/state-owned context intent, invokes only the injected
+`ContextSelectorPort`, and appends a metadata-only complete manifest or sanitized failure.
+Every role must complete before WORKSPACE_PREPARING. Missing external evidence, repository/
+artifact identity mismatch, required oversize/incompleteness, or an exhausted file race blocks;
+an internally invalid request/evidence result uses the added CONTEXT_PREPARING -> FAILED edge.
+Cancellation and stale revision checks happen before selection, and no provider/workspace/Git
+mutation launches on context failure.
+
+A current-process duplicate reuses its validated package. After process continuation, selected
+bodies are re-read through the bounded reader and must reproduce the persisted manifest before
+later agent execution. This is deterministic rematerialization, not filesystem snapshot or
+general artifact-store durability. The selector never changes Run state itself.
+
+P5-002 does not add transitions. Before every applicable agent invocation and validation run,
+the coordinator persists intent and atomically reserves budget. A valid prelaunch refusal
+persists a blocked outcome and maps through the existing table; stale revision remains a
+distinct no-execution result. Validation timeout allowance never exceeds declared or remaining
+duration, and measured overage enters `FAILED` with `RUN_DURATION_EXHAUSTED` before later work.
+An unresolved prior reservation enters `BLOCKED`. Cancellation remains `CANCELLED`; telemetry
+availability never grants write, repair, review, or approval authority. Outcome persistence
+precedes settlement, and restart settlement does not reinvoke or create a new state edge.

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from datetime import datetime
 
+from revanent.context.models import ContextPackage, ContextSelectionRequest
 from revanent.domain import (
     AgentAttemptId,
     AgentInvocationId,
@@ -27,10 +29,12 @@ from revanent.ports.agents import (
     AgentStatus,
 )
 from revanent.ports.commands import CancellationToken
+from revanent.ports.context import ContextSelectorPort
 from revanent.ports.git import GitError, GitRepository, WorktreeId, WorktreeLifecycleStatus
 from revanent.ports.orchestration import (
     AttemptStatus,
     BuildAttempt,
+    ContextAttempt,
     LimitOutcome,
     LocalEvidenceCollector,
     OrchestrationAttemptId,
@@ -60,8 +64,31 @@ from revanent.ports.orchestration import (
     validation_attempt_status,
 )
 from revanent.ports.storage import ConcurrentRunUpdateError, RunRepository, StoredRun
-from revanent.ports.validation import ValidationExecutor, ValidationPlanResult, ValidationStatus
+from revanent.ports.telemetry import (
+    BudgetDecision,
+    BudgetDecisionStatus,
+    BudgetLimit,
+    BudgetMetric,
+    BudgetPolicy,
+    BudgetReservation,
+    BudgetSettlement,
+    ReservationStatus,
+    UsageMetric,
+    UsageProvenance,
+    UsageRecord,
+    UsageSource,
+    UsageUnit,
+    reservation_id,
+    usage_record_id,
+)
+from revanent.ports.validation import (
+    ValidationExecutor,
+    ValidationPlan,
+    ValidationPlanResult,
+    ValidationStatus,
+)
 from revanent.review import ReviewGate, ReviewGateInput, ReviewGateStatus
+from revanent.telemetry import TelemetryService, context_usage_records, provider_usage_records
 
 MAX_COORDINATION_STEPS = 1_024
 
@@ -113,6 +140,8 @@ class OrchestrationService:
         validation: ValidationExecutor,
         review_gate: ReviewGate,
         local_evidence: LocalEvidenceCollector,
+        context_selector: ContextSelectorPort,
+        telemetry: TelemetryService,
         clock: OrchestrationClock,
         ids: OrchestrationIdFactory | None = None,
         repair_policy: RepairPolicy | None = None,
@@ -124,10 +153,13 @@ class OrchestrationService:
         self._validation = validation
         self._review_gate = review_gate
         self._local_evidence = local_evidence
+        self._context_selector = context_selector
+        self._telemetry = telemetry
         self._clock = clock
         self._ids = ids or DeterministicOrchestrationIds()
         self._repair_policy = repair_policy or RepairPolicy()
         self._reconciler = SideEffectReconciler(git)
+        self._context_packages: dict[tuple[str, AgentRole], ContextPackage] = {}
 
     def execute(
         self,
@@ -139,12 +171,33 @@ class OrchestrationService:
             raise TypeError("request must be a validated OrchestrationRequest")
         initial = self._runs.get_run(request.run_id)
         if initial.run.state.is_terminal:
+            if request.expected_revision is None or initial.revision == request.expected_revision:
+                self._reconcile_telemetry(initial)
             return self._terminal_result(initial)
         if request.expected_revision is not None and initial.revision != request.expected_revision:
             return self._result(
                 initial,
                 OrchestrationStatus.STALE,
                 "persisted run revision differs from the caller expectation",
+            )
+        self._reconcile_telemetry(initial)
+        if initial.run.state.is_terminal:
+            return self._terminal_result(initial)
+        if self._has_unresolved_reservation(initial):
+            return self._terminate(
+                initial,
+                RunState.BLOCKED,
+                "unresolved reservation prevents safe continuation",
+            )
+        if initial.run.state not in {
+            RunState.CREATED,
+            RunState.PLANNING,
+            RunState.CONTEXT_PREPARING,
+        } and not self._restore_all_context(initial, request):
+            return self._terminate(
+                initial,
+                RunState.BLOCKED,
+                "durable context evidence cannot be safely materialized",
             )
         for _ in range(MAX_COORDINATION_STEPS):
             stored = self._runs.get_run(request.run_id)
@@ -161,6 +214,20 @@ class OrchestrationService:
                     "maximum run duration was exhausted",
                     limit=LimitOutcome.RUN_DURATION_EXHAUSTED,
                 )
+            duration_budget = self._duration_budget_decision(stored)
+            if duration_budget.status is not BudgetDecisionStatus.ALLOW:
+                if duration_budget.status is BudgetDecisionStatus.DENY_UNRESOLVED_RESERVATION:
+                    return self._terminate(
+                        stored,
+                        RunState.BLOCKED,
+                        "unresolved duration reservation prevents safe continuation",
+                    )
+                return self._terminate(
+                    stored,
+                    RunState.FAILED,
+                    "measured validation duration exhausted the run budget",
+                    limit=LimitOutcome.RUN_DURATION_EXHAUSTED,
+                )
             if cancellation is not None and cancellation.is_cancelled():
                 return self._cancel(stored)
             state = stored.run.state
@@ -170,14 +237,12 @@ class OrchestrationService:
                 self._transition(
                     stored,
                     RunState.CONTEXT_PREPARING,
-                    "prebuilt bounded context references accepted",
+                    "deterministic context preparation started",
                 )
             elif state is RunState.CONTEXT_PREPARING:
-                self._transition(
-                    stored,
-                    RunState.WORKSPACE_PREPARING,
-                    "workspace preparation started",
-                )
+                outcome = self._context(stored, request)
+                if outcome is not None:
+                    return outcome
             elif state is RunState.WORKSPACE_PREPARING:
                 try:
                     outcome = self._workspace(stored, request)
@@ -362,6 +427,172 @@ class OrchestrationService:
         self._transition(stored, RunState.BUILDING, "owned worktree created and verified")
         return None
 
+    def _context(
+        self,
+        stored: StoredRun,
+        request: OrchestrationRequest,
+    ) -> OrchestrationResult | None:
+        if any(item.task != stored.run.task for item in request.context_requests):
+            return self._terminate(
+                stored,
+                RunState.BLOCKED,
+                "context task identity or scope conflicts with the durable run",
+            )
+        for sequence, context_request in enumerate(request.context_requests, 1):
+            existing = self._attempt_records(stored, OrchestrationStep.CONTEXT, sequence)
+            if existing.outcome is not None:
+                assert isinstance(existing.outcome.attempt, ContextAttempt)
+                if existing.outcome.attempt.status is not AttemptStatus.COMPLETED:
+                    return self._terminate(
+                        stored,
+                        RunState.BLOCKED,
+                        "persisted context evidence is incomplete or invalid",
+                    )
+                if not self._restore_context_package(
+                    context_request,
+                    existing.outcome.attempt,
+                ):
+                    return self._terminate(
+                        stored,
+                        RunState.BLOCKED,
+                        "current context no longer matches the durable manifest",
+                    )
+                assert existing.outcome.attempt.completed_at is not None
+                assert existing.outcome.attempt.manifest is not None
+                self._telemetry.record(
+                    context_usage_records(
+                        existing.outcome.attempt.manifest,
+                        observed_at=existing.outcome.attempt.completed_at,
+                    )
+                )
+                continue
+            attempt_id = self._ids.attempt_id(
+                stored.run.id,
+                OrchestrationStep.CONTEXT,
+                sequence,
+            )
+            started = self._clock.now()
+            if existing.intent is None:
+                intent = ContextAttempt(
+                    attempt_id=attempt_id,
+                    run_id=stored.run.id,
+                    work_package_id=stored.run.work_package.id,
+                    sequence=sequence,
+                    status=AttemptStatus.INTENDED,
+                    started_at=started,
+                    side_effects=ReconciliationState.KNOWN_NONE,
+                    request_id=context_request.request_id,
+                    role=context_request.role,
+                )
+                if not self._persist(
+                    stored,
+                    intent,
+                    OrchestrationRecordStage.INTENT,
+                ).created:
+                    return self._result(
+                        stored,
+                        OrchestrationStatus.STALE,
+                        "context intent is owned elsewhere",
+                    )
+            else:
+                assert isinstance(existing.intent.attempt, ContextAttempt)
+                intent = existing.intent.attempt
+                if (
+                    intent.request_id != context_request.request_id
+                    or intent.role is not context_request.role
+                ):
+                    return self._terminate(
+                        stored,
+                        RunState.BLOCKED,
+                        "context intent conflicts with the current request",
+                    )
+            self._require_current(stored)
+            selected = self._context_selector.select(context_request)
+            if selected.failure is not None:
+                terminal = ContextAttempt(
+                    **intent.model_dump(exclude={"status", "completed_at", "failure", "manifest"}),
+                    status=(
+                        AttemptStatus.BLOCKED
+                        if selected.failure.blocking
+                        else AttemptStatus.INVALID
+                    ),
+                    completed_at=self._clock.now(),
+                    failure=self._failure(
+                        selected.failure.code,
+                        "deterministic context selection did not complete safely",
+                    ),
+                )
+                self._persist(stored, terminal, OrchestrationRecordStage.OUTCOME)
+                return self._terminate(
+                    stored,
+                    RunState.BLOCKED if selected.failure.blocking else RunState.FAILED,
+                    "required context is incomplete, unsafe, or unavailable",
+                )
+            assert selected.package is not None
+            package = selected.package
+            terminal = ContextAttempt(
+                **intent.model_dump(exclude={"status", "completed_at", "failure", "manifest"}),
+                status=AttemptStatus.COMPLETED,
+                completed_at=self._clock.now(),
+                manifest=package.manifest,
+            )
+            persisted_outcome = self._persist(
+                stored, terminal, OrchestrationRecordStage.OUTCOME
+            ).record.attempt
+            assert isinstance(persisted_outcome, ContextAttempt)
+            assert persisted_outcome.manifest is not None
+            assert persisted_outcome.completed_at is not None
+            self._telemetry.record(
+                context_usage_records(
+                    persisted_outcome.manifest,
+                    observed_at=persisted_outcome.completed_at,
+                )
+            )
+            self._context_packages[(stored.run.id.root, context_request.role)] = package
+        self._transition(
+            stored,
+            RunState.WORKSPACE_PREPARING,
+            "deterministic context manifests are complete",
+        )
+        return None
+
+    def _restore_context_package(
+        self,
+        request: ContextSelectionRequest,
+        attempt: ContextAttempt,
+    ) -> bool:
+        key = (request.run_id.root, request.role)
+        cached = self._context_packages.get(key)
+        if cached is not None:
+            return cached.manifest == attempt.manifest
+        selected = self._context_selector.select(request)
+        if selected.package is None or selected.package.manifest != attempt.manifest:
+            return False
+        self._context_packages[key] = selected.package
+        return True
+
+    def _restore_all_context(
+        self,
+        stored: StoredRun,
+        request: OrchestrationRequest,
+    ) -> bool:
+        records = self._journal.list_orchestration_records(stored.run.id)
+        outcomes = {
+            record.attempt.role: record.attempt
+            for record in records
+            if record.stage is OrchestrationRecordStage.OUTCOME
+            and isinstance(record.attempt, ContextAttempt)
+            and record.attempt.status is AttemptStatus.COMPLETED
+        }
+        return all(
+            context_request.role in outcomes
+            and self._restore_context_package(
+                context_request,
+                outcomes[context_request.role],
+            )
+            for context_request in request.context_requests
+        )
+
     def _build(
         self,
         stored: StoredRun,
@@ -443,9 +674,18 @@ class OrchestrationService:
                 "validation intent is already owned; explicit reconciliation is required",
             )
         else:
-            plan = request.validation_plans[sequence - 1]
-            attempt_id = self._ids.attempt_id(stored.run.id, OrchestrationStep.VALIDATION, sequence)
+            declared_plan = request.validation_plans[sequence - 1]
             started = self._clock.now()
+            allowance = self._validation_allowance_ms(stored, started_at=started)
+            plan = _cap_validation_plan(declared_plan, allowance)
+            if plan is None:
+                return self._terminate(
+                    stored,
+                    RunState.FAILED,
+                    "remaining run duration cannot launch mandatory validation",
+                    limit=LimitOutcome.RUN_DURATION_EXHAUSTED,
+                )
+            attempt_id = self._ids.attempt_id(stored.run.id, OrchestrationStep.VALIDATION, sequence)
             intent = ValidationAttempt(
                 attempt_id=attempt_id,
                 run_id=stored.run.id,
@@ -461,6 +701,37 @@ class OrchestrationService:
                     stored, OrchestrationStatus.STALE, "validation intent is owned elsewhere"
                 )
             self._require_current(stored)
+            reservation = self._validation_reservation(
+                stored,
+                attempt_id=attempt_id,
+                reserved_ms=sum(command.timeout_seconds for command in plan.commands) * 1_000,
+                created_at=started,
+            )
+            budget = self._telemetry.reserve(
+                reservation, self._budget_policy(stored), expected_revision=stored.revision
+            )
+            if budget.status is not BudgetDecisionStatus.ALLOW:
+                blocked = ValidationAttempt(
+                    **intent.model_dump(exclude={"status", "completed_at", "failure"}),
+                    status=AttemptStatus.BLOCKED,
+                    completed_at=self._clock.now(),
+                    failure=self._failure(
+                        "validation_budget_denied", budget.reason_code or "budget denied"
+                    ),
+                )
+                self._persist(stored, blocked, OrchestrationRecordStage.OUTCOME)
+                if budget.status is BudgetDecisionStatus.DENY_UNRESOLVED_RESERVATION:
+                    return self._terminate(
+                        stored,
+                        RunState.BLOCKED,
+                        "unresolved duration reservation prevents validation",
+                    )
+                return self._terminate(
+                    stored,
+                    RunState.FAILED,
+                    "validation duration reservation was denied",
+                    limit=LimitOutcome.RUN_DURATION_EXHAUSTED,
+                )
             result = self._validation.execute(plan, started_at=started, cancellation=cancellation)
             projected = _project_validation_result(result)
             terminal = ValidationAttempt(
@@ -481,6 +752,7 @@ class OrchestrationService:
                 result=projected,
             )
             self._persist(stored, terminal, OrchestrationRecordStage.OUTCOME)
+            self._settle_validation_reservation(reservation, projected, attempt_id)
         assert terminal.result is not None
         if terminal.result.approvable:
             self._transition(stored, RunState.REVIEWING, "required validation passed")
@@ -556,6 +828,8 @@ class OrchestrationService:
                     stored, OrchestrationStatus.STALE, "review intent is owned elsewhere"
                 )
             terminal = candidate
+        if terminal.status is AttemptStatus.BLOCKED and terminal.gate_decision is None:
+            return self._terminate(stored, RunState.BLOCKED, "review budget reservation was denied")
         assert terminal.gate_decision is not None
         decision = terminal.gate_decision
         if terminal.status is AttemptStatus.CANCELLED:
@@ -759,6 +1033,28 @@ class OrchestrationService:
         if not self._persist(stored, intent, OrchestrationRecordStage.INTENT).created:
             return None
         self._require_current(stored)
+        budget = self._external_budget_denial(stored)
+        reservation = None
+        if budget is None:
+            reservation = self._agent_reservation(stored, request, step)
+            budget = self._telemetry.reserve(
+                reservation, self._budget_policy(stored), expected_revision=stored.revision
+            )
+        if budget.status is not BudgetDecisionStatus.ALLOW:
+            terminal_values = {
+                **intent.model_dump(exclude={"status", "completed_at", "failure", "response"}),
+                "status": AttemptStatus.BLOCKED,
+                "completed_at": self._clock.now(),
+                "failure": self._failure("budget_denied", budget.reason_code or "budget denied"),
+            }
+            preflight_terminal = (
+                BuildAttempt.model_validate(terminal_values)
+                if step is OrchestrationStep.BUILD
+                else RepairAttempt.model_validate(terminal_values)
+            )
+            self._persist(stored, preflight_terminal, OrchestrationRecordStage.OUTCOME)
+            return preflight_terminal
+        assert reservation is not None
         response = adapter.invoke(request, cancellation=cancellation)
         projected = _project_agent_response(response)
         status = _agent_attempt_status(projected)
@@ -787,6 +1083,7 @@ class OrchestrationService:
         else:
             terminal = RepairAttempt.model_validate(terminal_values)
         self._persist(stored, terminal, OrchestrationRecordStage.OUTCOME)
+        self._settle_agent_reservation(reservation, projected, step)
         return terminal
 
     def _review_once(
@@ -822,6 +1119,26 @@ class OrchestrationService:
         if not self._persist(stored, intent, OrchestrationRecordStage.INTENT).created:
             return None
         self._require_current(stored)
+        budget = self._external_budget_denial(stored)
+        reservation = None
+        if budget is None:
+            reservation = self._agent_reservation(stored, agent_request, OrchestrationStep.REVIEW)
+            budget = self._telemetry.reserve(
+                reservation, self._budget_policy(stored), expected_revision=stored.revision
+            )
+        if budget.status is not BudgetDecisionStatus.ALLOW:
+            terminal = ReviewAttempt(
+                **intent.model_dump(
+                    exclude={"status", "completed_at", "failure", "response", "side_effects"}
+                ),
+                status=AttemptStatus.BLOCKED,
+                completed_at=self._clock.now(),
+                side_effects=ReconciliationState.KNOWN_NONE,
+                failure=self._failure("budget_denied", budget.reason_code or "budget denied"),
+            )
+            self._persist(stored, terminal, OrchestrationRecordStage.OUTCOME)
+            return terminal
+        assert reservation is not None
         response = _project_agent_response(adapter.invoke(agent_request, cancellation=cancellation))
         evaluated_at = max(self._clock.now(), response.completed_at, validation.result.completed_at)
         local = self._local_evidence.collect(
@@ -878,6 +1195,7 @@ class OrchestrationService:
             gate_decision=decision,
         )
         self._persist(stored, terminal, OrchestrationRecordStage.OUTCOME)
+        self._settle_agent_reservation(reservation, response, OrchestrationStep.REVIEW)
         return terminal
 
     def _record_prelaunch_blocked_agent(
@@ -947,12 +1265,261 @@ class OrchestrationService:
         sequence: int,
     ) -> AgentRequest:
         data = prototype.model_dump(mode="python")
+        package = self._context_packages.get((prototype.run_id.root, prototype.role))
+        if package is None:
+            raise ValueError("validated context package is unavailable for agent invocation")
         data.update(
             attempt_id=self._ids.agent_attempt_id(attempt_id),
             invocation_id=self._ids.invocation_id(attempt_id),
             attempt_number=sequence,
+            context=package.agent_references(),
         )
         return AgentRequest.model_validate(data)
+
+    def _budget_policy(self, stored: StoredRun) -> BudgetPolicy:
+        values = [
+            BudgetLimit(
+                metric=BudgetMetric.BUILD_ATTEMPTS,
+                unit=UsageUnit.ATTEMPTS,
+                integer_limit=stored.run.budgets.max_build_attempts,
+            ),
+            BudgetLimit(
+                metric=BudgetMetric.REVIEW_ATTEMPTS,
+                unit=UsageUnit.ATTEMPTS,
+                integer_limit=stored.run.budgets.max_review_attempts,
+            ),
+            BudgetLimit(
+                metric=BudgetMetric.TOTAL_DURATION,
+                unit=UsageUnit.MILLISECONDS,
+                integer_limit=stored.run.budgets.max_duration_seconds * 1_000,
+            ),
+        ]
+        if stored.run.budgets.max_repair_attempts > 0:
+            values.append(
+                BudgetLimit(
+                    metric=BudgetMetric.REPAIR_ATTEMPTS,
+                    unit=UsageUnit.ATTEMPTS,
+                    integer_limit=stored.run.budgets.max_repair_attempts,
+                )
+            )
+        if stored.run.budgets.max_remote_tokens is not None:
+            values.append(
+                BudgetLimit(
+                    metric=BudgetMetric.REMOTE_TOKENS,
+                    unit=UsageUnit.TOKENS,
+                    integer_limit=stored.run.budgets.max_remote_tokens,
+                )
+            )
+        if stored.run.budgets.max_estimated_cost_usd is not None:
+            values.append(
+                BudgetLimit(
+                    metric=BudgetMetric.ESTIMATED_COST,
+                    unit=UsageUnit.DECIMAL_CURRENCY,
+                    decimal_limit=stored.run.budgets.max_estimated_cost_usd,
+                    currency="USD",
+                )
+            )
+        return BudgetPolicy(limits=tuple(sorted(values, key=lambda item: item.metric.value)))
+
+    @staticmethod
+    def _external_budget_denial(stored: StoredRun) -> BudgetDecision | None:
+        if stored.run.budgets.max_remote_tokens is not None:
+            return BudgetDecision(
+                status=BudgetDecisionStatus.DENY_USAGE_UNAVAILABLE,
+                metric=BudgetMetric.REMOTE_TOKENS,
+                unit=UsageUnit.TOKENS,
+                reason_code="remote_token_ceiling_unavailable",
+            )
+        if stored.run.budgets.max_estimated_cost_usd is not None:
+            return BudgetDecision(
+                status=BudgetDecisionStatus.DENY_USAGE_UNAVAILABLE,
+                metric=BudgetMetric.ESTIMATED_COST,
+                unit=UsageUnit.DECIMAL_CURRENCY,
+                reason_code="estimated_cost_ceiling_unavailable",
+            )
+        return None
+
+    def _agent_reservation(
+        self, stored: StoredRun, request: AgentRequest, step: OrchestrationStep
+    ) -> BudgetReservation:
+        metric = {
+            OrchestrationStep.BUILD: BudgetMetric.BUILD_ATTEMPTS,
+            OrchestrationStep.REPAIR: BudgetMetric.REPAIR_ATTEMPTS,
+            OrchestrationStep.REVIEW: BudgetMetric.REVIEW_ATTEMPTS,
+        }[step]
+        key = f"{request.invocation_id.root}:{step.value.lower()}:attempt"
+        return BudgetReservation(
+            id=reservation_id(stored.run.id, key, metric),
+            run_id=stored.run.id,
+            work_package_id=stored.run.work_package.id,
+            metric=metric,
+            unit=UsageUnit.ATTEMPTS,
+            operation=step.value,
+            idempotency_key=key,
+            created_at=self._clock.now(),
+            integer_reserved=1,
+            attempt_id=request.attempt_id,
+            invocation_id=request.invocation_id,
+        )
+
+    def _settle_agent_reservation(
+        self, reservation: BudgetReservation, response: AgentResponse, step: OrchestrationStep
+    ) -> None:
+        metric = {
+            OrchestrationStep.BUILD: UsageMetric.BUILD_ATTEMPTS,
+            OrchestrationStep.REPAIR: UsageMetric.REPAIR_ATTEMPTS,
+            OrchestrationStep.REVIEW: UsageMetric.REVIEW_ATTEMPTS,
+        }[step]
+        attempt = UsageRecord(
+            id=usage_record_id(response.run_id, f"{response.invocation_id.root}:attempt", metric),
+            run_id=response.run_id,
+            work_package_id=response.work_package_id,
+            metric=metric,
+            unit=UsageUnit.ATTEMPTS,
+            provenance=UsageProvenance.MEASURED,
+            source=UsageSource.ORCHESTRATION,
+            observed_at=response.completed_at,
+            correlation_key=f"{response.invocation_id.root}:attempt",
+            integer_value=1,
+            attempt_id=response.attempt_id,
+            invocation_id=response.invocation_id,
+        )
+        settlement = BudgetSettlement(
+            reservation_id=reservation.id,
+            settled_at=response.completed_at,
+            integer_consumed=1,
+            status=ReservationStatus.SETTLED,
+        )
+        self._telemetry.settle(
+            reservation, settlement, (attempt, *provider_usage_records(response))
+        )
+
+    def _validation_reservation(
+        self,
+        stored: StoredRun,
+        *,
+        attempt_id: OrchestrationAttemptId,
+        reserved_ms: int,
+        created_at: datetime,
+    ) -> BudgetReservation:
+        key = f"{attempt_id.root}:validation_duration"
+        return BudgetReservation(
+            id=reservation_id(stored.run.id, key, BudgetMetric.TOTAL_DURATION),
+            run_id=stored.run.id,
+            work_package_id=stored.run.work_package.id,
+            metric=BudgetMetric.TOTAL_DURATION,
+            unit=UsageUnit.MILLISECONDS,
+            operation=OrchestrationStep.VALIDATION.value,
+            idempotency_key=key,
+            created_at=created_at,
+            integer_reserved=reserved_ms,
+        )
+
+    def _settle_validation_reservation(
+        self,
+        reservation: BudgetReservation,
+        result: ValidationPlanResult,
+        attempt_id: OrchestrationAttemptId,
+    ) -> None:
+        elapsed_ms = _elapsed_milliseconds(result.started_at, result.completed_at)
+        correlation = f"{attempt_id.root}:validation_duration"
+        usage = UsageRecord(
+            id=usage_record_id(result.run_id, correlation, UsageMetric.VALIDATION_DURATION),
+            run_id=result.run_id,
+            work_package_id=result.work_package_id,
+            metric=UsageMetric.VALIDATION_DURATION,
+            unit=UsageUnit.MILLISECONDS,
+            provenance=UsageProvenance.MEASURED,
+            source=UsageSource.VALIDATION,
+            observed_at=result.completed_at,
+            correlation_key=correlation,
+            integer_value=elapsed_ms,
+            reason_code=(
+                "validation_duration_overage"
+                if elapsed_ms > (reservation.integer_reserved or 0)
+                else None
+            ),
+        )
+        settlement = BudgetSettlement(
+            reservation_id=reservation.id,
+            settled_at=result.completed_at,
+            integer_consumed=elapsed_ms,
+            status=ReservationStatus.SETTLED,
+            reason_code=(
+                "validation_duration_overage"
+                if elapsed_ms > (reservation.integer_reserved or 0)
+                else None
+            ),
+        )
+        self._telemetry.settle(reservation, settlement, (usage,))
+
+    def _duration_budget_decision(self, stored: StoredRun) -> BudgetDecision:
+        return self._telemetry.decision(
+            run_id=stored.run.id,
+            policy=self._budget_policy(stored),
+            metric=BudgetMetric.TOTAL_DURATION,
+            requested_integer=1,
+        )
+
+    def _has_unresolved_reservation(self, stored: StoredRun) -> bool:
+        return any(
+            reservation.status is ReservationStatus.UNRESOLVED
+            for reservation in self._telemetry.reservations(stored.run.id)
+        )
+
+    def _validation_allowance_ms(self, stored: StoredRun, *, started_at: datetime) -> int:
+        decision = self._duration_budget_decision(stored)
+        if decision.status is not BudgetDecisionStatus.ALLOW:
+            return 0
+        wall_remaining = stored.run.budgets.max_duration_seconds * 1_000 - _elapsed_milliseconds(
+            stored.run.created_at, started_at
+        )
+        return max(0, min(wall_remaining, decision.remaining_integer or 0))
+
+    def _reconcile_telemetry(self, stored: StoredRun) -> None:
+        """Perform one finite provider-neutral pass over active reservations."""
+        records = self._journal.list_orchestration_records(stored.run.id)
+        outcomes = {
+            record.attempt.attempt_id: record.attempt
+            for record in records
+            if record.stage is OrchestrationRecordStage.OUTCOME
+        }
+        for reservation in self._telemetry.reservations(stored.run.id):
+            if reservation.status is not ReservationStatus.ACTIVE:
+                continue
+            matched = next(
+                (
+                    attempt
+                    for attempt in outcomes.values()
+                    if (
+                        reservation.invocation_id is not None
+                        and isinstance(attempt, (BuildAttempt, RepairAttempt, ReviewAttempt))
+                        and attempt.invocation_id == reservation.invocation_id
+                    )
+                    or (
+                        isinstance(attempt, ValidationAttempt)
+                        and reservation.id
+                        == reservation_id(
+                            stored.run.id,
+                            f"{attempt.attempt_id.root}:validation_duration",
+                            BudgetMetric.TOTAL_DURATION,
+                        )
+                    )
+                ),
+                None,
+            )
+            if isinstance(matched, (BuildAttempt, RepairAttempt, ReviewAttempt)):
+                if matched.response is not None:
+                    self._settle_agent_reservation(reservation, matched.response, matched.kind)
+                    continue
+            elif isinstance(matched, ValidationAttempt) and matched.result is not None:
+                self._settle_validation_reservation(reservation, matched.result, matched.attempt_id)
+                continue
+            self._telemetry.mark_unresolved(
+                reservation,
+                observed_at=max(self._clock.now(), reservation.created_at),
+                reason_code="trusted_outcome_missing",
+            )
 
     def _agent_side_effects(
         self,
@@ -1117,7 +1684,8 @@ class OrchestrationService:
     def _persist(
         self,
         stored: StoredRun,
-        attempt: WorkspaceAttempt
+        attempt: ContextAttempt
+        | WorkspaceAttempt
         | BuildAttempt
         | ValidationAttempt
         | ReviewAttempt
@@ -1394,6 +1962,37 @@ class _AttemptRecords:
     outcome: OrchestrationRecord | None
 
 
+def _elapsed_milliseconds(started_at: datetime, completed_at: datetime) -> int:
+    """Return a nonnegative, conservative integer duration from trusted UTC evidence."""
+    delta = completed_at - started_at
+    microseconds = delta.days * 86_400_000_000 + delta.seconds * 1_000_000 + delta.microseconds
+    if microseconds < 0:
+        raise ValueError("duration completion precedes its start")
+    return (microseconds + 999) // 1_000
+
+
+def _cap_validation_plan(plan: ValidationPlan, allowance_ms: int) -> ValidationPlan | None:
+    """Derive a plan whose declared aggregate timeout fits the finite allowance."""
+    available_seconds = min(
+        allowance_ms // 1_000,
+        sum(command.timeout_seconds for command in plan.commands),
+    )
+    if available_seconds < len(plan.commands):
+        return None
+    remaining = available_seconds
+    commands = []
+    for index, command in enumerate(plan.commands):
+        commands_after = len(plan.commands) - index - 1
+        timeout_seconds = min(command.timeout_seconds, remaining - commands_after)
+        command_data = command.model_dump(mode="python")
+        command_data["timeout_seconds"] = timeout_seconds
+        commands.append(type(command).model_validate(command_data))
+        remaining -= timeout_seconds
+    plan_data = plan.model_dump(mode="python")
+    plan_data["commands"] = tuple(commands)
+    return ValidationPlan.model_validate(plan_data)
+
+
 def _agent_attempt_status(response: AgentResponse) -> AttemptStatus:
     return {
         AgentStatus.COMPLETED: AttemptStatus.COMPLETED,
@@ -1408,7 +2007,7 @@ def _agent_attempt_status(response: AgentResponse) -> AttemptStatus:
 
 def _project_agent_response(response: AgentResponse) -> AgentResponse:
     data = response.model_dump(mode="python")
-    data.update(public_text="", diagnostics=(), usage=None)
+    data.update(public_text="", diagnostics=())
     return AgentResponse.model_validate(data)
 
 

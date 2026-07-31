@@ -115,6 +115,29 @@ completed. `APPROVABLE` contains a satisfied local `ApprovalGate`; every other s
 reason codes and no gate. P4-001 does not itself persist this decision or transition a
 run; P4-002 performs that wiring.
 
+## Deterministic context preparation
+
+Construct one `ContextSelectionRequest` for each agent role required by an orchestration
+request. Bind it to the durable run/task/work package, absolute verified source worktree, safe
+repository/worktree references, injected UTC timestamp, trusted controls, typed evidence, and
+explicit limits. Do not pass repository walks, provider-generated paths, raw environment
+values, or unbounded output. Governing ADRs are included only when named; Python dependency
+and exact-name test expansion are bounded conveniences, not authority.
+
+The selector reads only approved relative files/artifacts through its consistency reader.
+Required evidence that is missing, outside scope, unsafe, secret-bearing, changed, incomplete,
+or too large prevents provider execution. Preferred/optional exclusions and truncation remain
+in the bounded manifest. Treat all repository/test/provider/diagnostic items according to
+their trust labels; do not concatenate them with trusted controls or promote text because it
+contains imperative language.
+
+During CONTEXT_PREPARING the coordinator persists context intent, invokes the injected
+selector, and persists the metadata-only manifest before workspace creation. SQLite stores no
+selected body. A process continuation may re-read authorized files but must reproduce the
+durable manifest; a mismatch blocks. Current-process duplicates reuse the validated package.
+Do not edit context rows, bypass the selector with ad hoc prompts, treat SHA-256 as a signature,
+or continue after a required-evidence failure.
+
 ## Bounded orchestration and repair
 
 P4-002 exposes a library `OrchestrationService`; P6-002 still owns user-facing
@@ -127,11 +150,13 @@ An `OrchestrationRequest` supplies the existing durable run ID, optional entry r
 one run-bound worktree request, bounded builder/reviewer/local-repair and optional Codex-
 repair prototypes, ordered validation plans, and explicit Codex write authorization. It is
 not project configuration and cannot enable cleanup, publication, or arbitrary commands.
-Context remains a prebuilt bounded P3 reference until P5.
+P5-001 context requests and metadata-only manifests are required and are deterministically
+rematerialized before later agent execution.
 
 Execution is finite. Before an external effect, the coordinator checks duration,
 cancellation, current state/revision, limits, and live active worktree ownership; appends a
-stable intent; rechecks currency; invokes once; and appends projected outcome. On restart,
+stable intent; rechecks currency; atomically reserves applicable capacity; invokes once;
+appends projected outcome; and atomically settles. On restart,
 use a request whose expected revision matches the current nonterminal run, or deliberately
 omit the entry check. A terminal run returns idempotently even when the original entry
 revision is old. An outcome persisted before its transition is reused.
@@ -211,6 +236,24 @@ replacement can still occur after verification; normal Git refusal and retained 
 are the final fail-safe. Back up the ownership state together with any retained partial
 worktree before manual recovery.
 
+## Usage telemetry and budget recovery
+
+P5-002 stores metadata-only usage, reservations, and settlements in the same explicit SQLite
+database as the run journal. Attempt and validation operations persist intent, atomically
+reserve, invoke, persist outcome, and atomically settle in that order. Hard token/cost budgets
+without a finite invocation ceiling fail before launch. Missing provider tokens or pricing are
+`UNAVAILABLE`, not zero; ambiguous launch/completion is `UNRESOLVED` and retains capacity.
+
+On continuation, persisted agent and validation outcomes settle without reinvocation. Active
+reservations without trusted outcomes are never expired or silently released. Operators must
+preserve the database and resolve such ambiguity manually through the later P6-002 workflow.
+Actual duration overage is not clamped and prevents later consuming work. SQLite serializes
+writers for one local database; do not use it as distributed coordination.
+
+There is no current price fetch or billing reconciliation. Decimal estimated cost, if a future
+reviewed estimator supplies it, is an estimate only. Backups must include migration 4 telemetry
+tables with run/event/orchestration evidence.
+
 ## Durable state
 
 P1-002 provides a library-level SQLite repository at an explicit `pathlib.Path`; no
@@ -218,7 +261,7 @@ CLI currently selects or initializes that path. Initialization creates the datab
 file intentionally. Parent creation is disabled by default and must be requested
 explicitly. Read operations use SQLite read-only mode and never create an absent file.
 
-SQLite schema version 2 is recorded in `schema_migrations`. Repeated initialization validates
+SQLite schema version 4 is recorded in `schema_migrations`. Repeated initialization validates
 and preserves the existing history. A newer, incomplete, malformed, or corrupt
 database is rejected without deletion, truncation, migration downgrade, or automatic
 repair. Operators should preserve the file for diagnosis. Future migrations append to
@@ -230,9 +273,10 @@ optimistic run revision, and a stable event idempotency key. Initial creation pr
 revision zero and no event. Successful transitions increment the revision and append
 one immutable, per-run sequenced event atomically. Equal event timestamps are ordered
 by sequence. Migration 2 adds append-only per-run orchestration intent/outcome/
-reconciliation records with strict correlation and unique attempt/stage boundaries. Stale
-revisions fail without writing; an event/attempt insertion failure rolls back and launches
-no later side effect.
+reconciliation records with strict correlation and unique attempt/stage boundaries. Migration
+3 admits metadata-only context outcomes. Migration 4 adds append-only usage, reservations, and
+settlements. Stale revisions fail without writing; an event/attempt/telemetry insertion failure
+rolls back and launches no later side effect.
 
 Back up the SQLite file only while no writer is active. Multi-process behavior beyond
 SQLite writer serialization and revision rejection is not claimed. No CLI resume,

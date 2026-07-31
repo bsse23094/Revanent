@@ -27,6 +27,7 @@ from revanent.ports.agents import (
     AgentStatus,
     SideEffectState,
 )
+from revanent.ports.context import ContextManifest, ContextSelectionRequest
 from revanent.ports.git import (
     WorktreeCreationRequest,
     WorktreeId,
@@ -86,6 +87,7 @@ class OrchestrationRecordId(RootModel[str]):
 
 
 class OrchestrationStep(StrEnum):
+    CONTEXT = "CONTEXT"
     WORKSPACE = "WORKSPACE"
     BUILD = "BUILD"
     VALIDATION = "VALIDATION"
@@ -262,6 +264,29 @@ class WorkspaceAttempt(_AttemptBase):
         return self
 
 
+class ContextAttempt(_AttemptBase):
+    kind: Literal[OrchestrationStep.CONTEXT] = OrchestrationStep.CONTEXT
+    request_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")]
+    role: AgentRole
+    manifest: ContextManifest | None = None
+
+    @model_validator(mode="after")
+    def _validate_context(self) -> Self:
+        if self.status is AttemptStatus.COMPLETED:
+            if self.manifest is None:
+                raise ValueError("completed context attempts require a manifest")
+            if (
+                self.manifest.run_id != self.run_id
+                or self.manifest.work_package_id != self.work_package_id
+                or self.manifest.role is not self.role
+                or not self.manifest.required_evidence_complete
+            ):
+                raise ValueError("context manifest correlation or completeness mismatch")
+        elif self.manifest is not None:
+            raise ValueError("non-completed context attempts cannot carry a manifest")
+        return self
+
+
 class BuildAttempt(_AttemptBase):
     kind: Literal[OrchestrationStep.BUILD] = OrchestrationStep.BUILD
     role: Literal[AgentRole.BUILDER] = AgentRole.BUILDER
@@ -315,6 +340,10 @@ class ReviewAttempt(_AttemptBase):
     @model_validator(mode="after")
     def _validate_review(self) -> Self:
         _validate_agent_attempt(self, AgentRole.REVIEWER)
+        if self.status is AttemptStatus.BLOCKED and (
+            self.response is None and self.local_evidence is None and self.gate_decision is None
+        ):
+            return self
         terminal = self.status is not AttemptStatus.INTENDED
         if terminal != (
             self.response is not None
@@ -356,7 +385,12 @@ class RepairAttempt(_AttemptBase):
 
 
 AttemptEvidence = Annotated[
-    WorkspaceAttempt | BuildAttempt | ValidationAttempt | ReviewAttempt | RepairAttempt,
+    ContextAttempt
+    | WorkspaceAttempt
+    | BuildAttempt
+    | ValidationAttempt
+    | ReviewAttempt
+    | RepairAttempt,
     Field(discriminator="kind"),
 ]
 
@@ -420,6 +454,7 @@ class OrchestrationRequest(_OrchestrationModel):
     schema_version: Literal[1] = ORCHESTRATION_SCHEMA_VERSION
     run_id: RunId
     expected_revision: int | None = Field(default=None, ge=0)
+    context_requests: tuple[ContextSelectionRequest, ...]
     worktree: WorktreeCreationRequest
     builder_request: AgentRequest
     reviewer_request: AgentRequest
@@ -430,9 +465,27 @@ class OrchestrationRequest(_OrchestrationModel):
 
     @model_validator(mode="after")
     def _validate_request(self) -> Self:
+        if not self.context_requests:
+            raise ValueError("orchestration requires deterministic context requests")
         if not 1 <= len(self.validation_plans) <= MAX_ORCHESTRATION_PLANS:
             raise ValueError("orchestration requires 1 to 101 validation plans")
         work_package = self.builder_request.work_package_id
+        context_roles = tuple(item.role for item in self.context_requests)
+        required_roles = {AgentRole.BUILDER, AgentRole.REVIEWER}
+        if self.codex_repair_request is not None:
+            required_roles.add(AgentRole.REPAIRER)
+        if (
+            set(context_roles) != required_roles
+            or tuple(sorted(context_roles, key=lambda item: item.value)) != context_roles
+        ):
+            raise ValueError("context requests must be sorted and cover every agent role")
+        if any(
+            item.run_id != self.run_id
+            or item.work_package_id != work_package
+            or item.root != self.worktree.source_path
+            for item in self.context_requests
+        ):
+            raise ValueError("context requests must match run, package, and source worktree")
         prototypes = (
             (self.builder_request, AgentRole.BUILDER),
             (self.reviewer_request, AgentRole.REVIEWER),

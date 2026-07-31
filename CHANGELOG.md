@@ -45,3 +45,11 @@ and will adopt Semantic Versioning when its first release is cut.
   crash/restart, concurrency, limit, scope, ownership, and approval E2E coverage.
 - P4-002 audit hardening for reviewer-cancellation precedence and exact live-worktree
   identity matching during interrupted workspace reconciliation.
+- P5-001 deterministic context contracts, bounded multi-source discovery and selection,
+  centralized race-aware reads, redaction/provenance/manifest evidence, agent-request context
+  projection, durable orchestration context outcomes, SQLite migration 3, and adversarial
+  local-only coverage.
+- P5-002 immutable usage/provenance/budget/reservation/settlement contracts; SQLite migration 4;
+  atomic attempt, duration, token, and Decimal-cost reservation/settlement; validation timeout
+  capping and measured overage; restart reconciliation without replay; unavailable/unresolved
+  semantics; metadata-only privacy; and real local SQLite concurrency/adversarial coverage.

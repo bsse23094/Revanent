@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -47,8 +48,19 @@ from revanent.ports.storage import (
     TransitionMismatchError,
     UnsupportedSchemaVersionError,
 )
+from revanent.ports.telemetry import (
+    BudgetDecision,
+    BudgetDecisionStatus,
+    BudgetMetric,
+    BudgetPolicy,
+    BudgetReservation,
+    BudgetSettlement,
+    ReservationStatus,
+    UsageMetric,
+    UsageRecord,
+)
 
-STORAGE_SCHEMA_VERSION = 2
+STORAGE_SCHEMA_VERSION = 4
 DOMAIN_MODEL_VERSION = 1
 
 
@@ -170,7 +182,11 @@ MIGRATIONS = (
                 attempt_id TEXT NOT NULL
                     CHECK (length(attempt_id) = 41 AND substr(attempt_id, 1, 9) = 'oattempt_'),
                 attempt_kind TEXT NOT NULL
-                    CHECK (attempt_kind IN ('WORKSPACE','BUILD','VALIDATION','REVIEW','REPAIR')),
+                    CHECK (
+                        attempt_kind IN (
+                            'CONTEXT','WORKSPACE','BUILD','VALIDATION','REVIEW','REPAIR'
+                        )
+                    ),
                 occurred_at TEXT NOT NULL CHECK (length(occurred_at) BETWEEN 20 AND 35),
                 payload_version INTEGER NOT NULL CHECK (payload_version > 0),
                 record_payload_json TEXT NOT NULL
@@ -212,6 +228,172 @@ MIGRATIONS = (
             """,
         ),
     ),
+    Migration(
+        version=3,
+        name="context_manifest_orchestration_evidence",
+        statements=(
+            "DROP TRIGGER trg_orchestration_no_update",
+            "DROP TRIGGER trg_orchestration_no_delete",
+            "DROP INDEX idx_orchestration_run_attempt",
+            "ALTER TABLE orchestration_records RENAME TO orchestration_records_v2",
+            f"""
+            CREATE TABLE orchestration_records (
+                record_id TEXT PRIMARY KEY
+                    CHECK (length(record_id) = 69 AND substr(record_id, 1, 5) = 'orec_'),
+                run_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL CHECK (sequence BETWEEN 1 AND 1024),
+                run_revision INTEGER NOT NULL CHECK (run_revision >= 0),
+                expected_state TEXT NOT NULL CHECK (expected_state IN ({_STATE_CHECK})),
+                record_stage TEXT NOT NULL
+                    CHECK (record_stage IN ('INTENT','OUTCOME','RECONCILIATION')),
+                attempt_id TEXT NOT NULL
+                    CHECK (length(attempt_id) = 41 AND substr(attempt_id, 1, 9) = 'oattempt_'),
+                attempt_kind TEXT NOT NULL
+                    CHECK (
+                        attempt_kind IN (
+                            'CONTEXT','WORKSPACE','BUILD','VALIDATION','REVIEW','REPAIR'
+                        )
+                    ),
+                occurred_at TEXT NOT NULL CHECK (length(occurred_at) BETWEEN 20 AND 35),
+                payload_version INTEGER NOT NULL CHECK (payload_version > 0),
+                record_payload_json TEXT NOT NULL
+                    CHECK (length(record_payload_json) BETWEEN 2 AND 1048576)
+                    CHECK (json_valid(record_payload_json))
+                    CHECK (json_extract(record_payload_json, '$.id') = record_id)
+                    CHECK (json_extract(record_payload_json, '$.run_id') = run_id)
+                    CHECK (json_extract(record_payload_json, '$.sequence') = sequence)
+                    CHECK (json_extract(record_payload_json, '$.run_revision') = run_revision)
+                    CHECK (json_extract(record_payload_json, '$.expected_state') = expected_state)
+                    CHECK (json_extract(record_payload_json, '$.stage') = record_stage)
+                    CHECK (json_extract(record_payload_json, '$.attempt.attempt_id') = attempt_id)
+                    CHECK (json_extract(record_payload_json, '$.attempt.kind') = attempt_kind)
+                    CHECK (json_extract(record_payload_json, '$.occurred_at') = occurred_at)
+                    CHECK (json_extract(record_payload_json, '$.schema_version') = payload_version),
+                CONSTRAINT uq_orchestration_sequence UNIQUE (run_id, sequence),
+                CONSTRAINT uq_orchestration_stage UNIQUE (run_id, attempt_id, record_stage),
+                CONSTRAINT fk_orchestration_run
+                    FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE RESTRICT
+            )
+            """,
+            """
+            INSERT INTO orchestration_records (
+                record_id, run_id, sequence, run_revision, expected_state, record_stage,
+                attempt_id, attempt_kind, occurred_at, payload_version, record_payload_json
+            )
+            SELECT
+                record_id, run_id, sequence, run_revision, expected_state, record_stage,
+                attempt_id, attempt_kind, occurred_at, payload_version, record_payload_json
+            FROM orchestration_records_v2
+            ORDER BY run_id, sequence
+            """,
+            "DROP TABLE orchestration_records_v2",
+            """
+            CREATE INDEX idx_orchestration_run_attempt
+                ON orchestration_records(run_id, attempt_id, sequence)
+            """,
+            """
+            CREATE TRIGGER trg_orchestration_no_update
+            BEFORE UPDATE ON orchestration_records
+            BEGIN
+                SELECT RAISE(ABORT, 'orchestration records are append-only');
+            END
+            """,
+            """
+            CREATE TRIGGER trg_orchestration_no_delete
+            BEFORE DELETE ON orchestration_records
+            BEGIN
+                SELECT RAISE(ABORT, 'orchestration records are append-only');
+            END
+            """,
+        ),
+    ),
+    Migration(
+        version=4,
+        name="append_only_usage_and_budget_reservations",
+        statements=(
+            """
+            CREATE TABLE usage_records (
+                usage_id TEXT PRIMARY KEY
+                    CHECK (length(usage_id) = 70 AND substr(usage_id, 1, 6) = 'usage_'),
+                run_id TEXT NOT NULL,
+                correlation_key TEXT NOT NULL CHECK (length(correlation_key) BETWEEN 1 AND 128),
+                metric TEXT NOT NULL CHECK (length(metric) BETWEEN 1 AND 64),
+                provenance TEXT NOT NULL CHECK (length(provenance) BETWEEN 1 AND 32),
+                payload_version INTEGER NOT NULL CHECK (payload_version = 1),
+                payload_json TEXT NOT NULL CHECK (length(payload_json) BETWEEN 2 AND 65536)
+                    CHECK (json_valid(payload_json))
+                    CHECK (json_extract(payload_json, '$.id') = usage_id)
+                    CHECK (json_extract(payload_json, '$.run_id') = run_id)
+                    CHECK (json_extract(payload_json, '$.correlation_key') = correlation_key)
+                    CHECK (json_extract(payload_json, '$.metric') = metric)
+                    CHECK (json_extract(payload_json, '$.provenance') = provenance),
+                CONSTRAINT uq_usage_correlation UNIQUE (run_id, correlation_key, metric),
+                CONSTRAINT fk_usage_run FOREIGN KEY (run_id)
+                    REFERENCES runs(run_id) ON DELETE RESTRICT
+            )
+            """,
+            """
+            CREATE TABLE budget_reservations (
+                reservation_id TEXT PRIMARY KEY
+                    CHECK (
+                        length(reservation_id) = 72
+                        AND substr(reservation_id, 1, 8) = 'reserve_'
+                    ),
+                run_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+                metric TEXT NOT NULL CHECK (length(metric) BETWEEN 1 AND 64),
+                payload_version INTEGER NOT NULL CHECK (payload_version = 1),
+                payload_json TEXT NOT NULL CHECK (length(payload_json) BETWEEN 2 AND 65536)
+                    CHECK (json_valid(payload_json))
+                    CHECK (json_extract(payload_json, '$.id') = reservation_id)
+                    CHECK (json_extract(payload_json, '$.run_id') = run_id)
+                    CHECK (json_extract(payload_json, '$.idempotency_key') = idempotency_key)
+                    CHECK (json_extract(payload_json, '$.metric') = metric),
+                CONSTRAINT uq_reservation_boundary UNIQUE (run_id, idempotency_key, metric),
+                CONSTRAINT fk_reservation_run FOREIGN KEY (run_id)
+                    REFERENCES runs(run_id) ON DELETE RESTRICT
+            )
+            """,
+            """
+            CREATE TABLE budget_settlements (
+                reservation_id TEXT PRIMARY KEY,
+                payload_version INTEGER NOT NULL CHECK (payload_version = 1),
+                payload_json TEXT NOT NULL CHECK (length(payload_json) BETWEEN 2 AND 65536)
+                    CHECK (json_valid(payload_json))
+                    CHECK (json_extract(payload_json, '$.reservation_id') = reservation_id),
+                CONSTRAINT fk_settlement_reservation
+                    FOREIGN KEY (reservation_id) REFERENCES budget_reservations(reservation_id)
+                    ON DELETE RESTRICT
+            )
+            """,
+            "CREATE INDEX idx_usage_records_run ON usage_records(run_id, metric, correlation_key)",
+            "CREATE INDEX idx_budget_reservations_run ON budget_reservations(run_id, metric)",
+            """
+            CREATE TRIGGER trg_usage_records_no_update BEFORE UPDATE ON usage_records
+            BEGIN SELECT RAISE(ABORT, 'usage records are append-only'); END
+            """,
+            """
+            CREATE TRIGGER trg_usage_records_no_delete BEFORE DELETE ON usage_records
+            BEGIN SELECT RAISE(ABORT, 'usage records are append-only'); END
+            """,
+            """
+            CREATE TRIGGER trg_budget_reservations_no_update BEFORE UPDATE ON budget_reservations
+            BEGIN SELECT RAISE(ABORT, 'budget reservations are append-only'); END
+            """,
+            """
+            CREATE TRIGGER trg_budget_reservations_no_delete BEFORE DELETE ON budget_reservations
+            BEGIN SELECT RAISE(ABORT, 'budget reservations are append-only'); END
+            """,
+            """
+            CREATE TRIGGER trg_budget_settlements_no_update BEFORE UPDATE ON budget_settlements
+            BEGIN SELECT RAISE(ABORT, 'budget settlements are append-only'); END
+            """,
+            """
+            CREATE TRIGGER trg_budget_settlements_no_delete BEFORE DELETE ON budget_settlements
+            BEGIN SELECT RAISE(ABORT, 'budget settlements are append-only'); END
+            """,
+        ),
+    ),
 )
 
 _REQUIRED_OBJECTS = {
@@ -225,6 +407,17 @@ _REQUIRED_OBJECTS = {
     "idx_orchestration_run_attempt": "index",
     "trg_orchestration_no_update": "trigger",
     "trg_orchestration_no_delete": "trigger",
+    "usage_records": "table",
+    "budget_reservations": "table",
+    "budget_settlements": "table",
+    "idx_usage_records_run": "index",
+    "idx_budget_reservations_run": "index",
+    "trg_usage_records_no_update": "trigger",
+    "trg_usage_records_no_delete": "trigger",
+    "trg_budget_reservations_no_update": "trigger",
+    "trg_budget_reservations_no_delete": "trigger",
+    "trg_budget_settlements_no_update": "trigger",
+    "trg_budget_settlements_no_delete": "trigger",
 }
 _REQUIRED_COLUMNS = {
     "schema_migrations": {"version", "name", "applied_at"},
@@ -263,12 +456,33 @@ _REQUIRED_COLUMNS = {
         "payload_version",
         "record_payload_json",
     },
+    "usage_records": {
+        "usage_id",
+        "run_id",
+        "correlation_key",
+        "metric",
+        "provenance",
+        "payload_version",
+        "payload_json",
+    },
+    "budget_reservations": {
+        "reservation_id",
+        "run_id",
+        "idempotency_key",
+        "metric",
+        "payload_version",
+        "payload_json",
+    },
+    "budget_settlements": {"reservation_id", "payload_version", "payload_json"},
 }
 _TABLE_INFO_QUERIES = {
     "schema_migrations": "PRAGMA table_info(schema_migrations)",
     "runs": "PRAGMA table_info(runs)",
     "run_events": "PRAGMA table_info(run_events)",
     "orchestration_records": "PRAGMA table_info(orchestration_records)",
+    "usage_records": "PRAGMA table_info(usage_records)",
+    "budget_reservations": "PRAGMA table_info(budget_reservations)",
+    "budget_settlements": "PRAGMA table_info(budget_settlements)",
 }
 
 
@@ -533,6 +747,464 @@ class SQLiteRunRepository:
         except sqlite3.DatabaseError:
             raise StorageOperationError("persist orchestration record") from None
 
+    def list_usage_records(self, run_id: RunId) -> tuple[UsageRecord, ...]:
+        try:
+            with (
+                self._connect(read_only=True, require_existing=True) as connection,
+                self._transaction(connection, write=False),
+            ):
+                self._assert_current_schema(connection)
+                rows = connection.execute(
+                    "SELECT * FROM usage_records WHERE run_id = ? ORDER BY metric, correlation_key",
+                    (run_id.root,),
+                ).fetchall()
+                return tuple(_deserialize_usage_record(row) for row in rows)
+        except StorageError:
+            raise
+        except sqlite3.DatabaseError:
+            raise StorageOperationError("list usage records") from None
+
+    def list_reservations(self, run_id: RunId) -> tuple[BudgetReservation, ...]:
+        try:
+            with (
+                self._connect(read_only=True, require_existing=True) as connection,
+                self._transaction(connection, write=False),
+            ):
+                self._assert_current_schema(connection)
+                rows = connection.execute(
+                    """
+                    SELECT r.*, s.payload_json AS settlement_payload_json
+                    FROM budget_reservations AS r
+                    LEFT JOIN budget_settlements AS s ON s.reservation_id = r.reservation_id
+                    WHERE r.run_id = ? ORDER BY r.metric, r.idempotency_key
+                    """,
+                    (run_id.root,),
+                ).fetchall()
+                values = []
+                for row in rows:
+                    reservation = _deserialize_reservation(row)
+                    settlement_payload = row["settlement_payload_json"]
+                    if settlement_payload is not None:
+                        settlement = _deserialize_settlement(settlement_payload)
+                        status = settlement.status
+                        reservation = BudgetReservation.model_validate(
+                            {**reservation.model_dump(mode="python"), "status": status}
+                        )
+                    values.append(reservation)
+                return tuple(values)
+        except StorageError:
+            raise
+        except sqlite3.DatabaseError:
+            raise StorageOperationError("list budget reservations") from None
+
+    def record_usage(self, record: UsageRecord) -> bool:
+        return self._append_telemetry(
+            table="usage_records",
+            identifier_column="usage_id",
+            identifier=record.id,
+            payload=record,
+            values=(
+                record.id,
+                record.run_id.root,
+                record.correlation_key,
+                record.metric.value,
+                record.provenance.value,
+                record.schema_version,
+                record.model_dump_json(),
+            ),
+            statement="""
+                INSERT INTO usage_records (usage_id, run_id, correlation_key, metric, provenance,
+                    payload_version, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+        )
+
+    def reserve(self, reservation: BudgetReservation) -> bool:
+        return self._append_telemetry(
+            table="budget_reservations",
+            identifier_column="reservation_id",
+            identifier=reservation.id,
+            payload=reservation,
+            values=(
+                reservation.id,
+                reservation.run_id.root,
+                reservation.idempotency_key,
+                reservation.metric.value,
+                reservation.schema_version,
+                reservation.model_dump_json(),
+            ),
+            statement="""
+                INSERT INTO budget_reservations (reservation_id, run_id, idempotency_key, metric,
+                    payload_version, payload_json) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+        )
+
+    def reserve_if_allowed(
+        self,
+        reservation: BudgetReservation,
+        policy: BudgetPolicy,
+        *,
+        expected_revision: int | None = None,
+        require_known: bool = False,
+    ) -> BudgetDecision:
+        """Atomically evaluate one policy limit and append its reservation."""
+        try:
+            with (
+                self._connect(read_only=False, require_existing=True) as connection,
+                self._transaction(connection, write=True),
+            ):
+                self._assert_current_schema(connection)
+                row = connection.execute(
+                    "SELECT revision FROM runs WHERE run_id = ?", (reservation.run_id.root,)
+                ).fetchone()
+                if row is None:
+                    raise RunNotFoundError(reservation.run_id)
+                if (
+                    expected_revision is not None
+                    and _row_int(row, "revision", "run revision") != expected_revision
+                ):
+                    return BudgetDecision(
+                        status=BudgetDecisionStatus.DENY_STALE_STATE,
+                        metric=reservation.metric,
+                        unit=reservation.unit,
+                        reason_code="stale_run_revision",
+                    )
+                existing = connection.execute(
+                    "SELECT payload_json FROM budget_reservations WHERE reservation_id = ?",
+                    (reservation.id,),
+                ).fetchone()
+                if existing is not None:
+                    if (
+                        BudgetReservation.model_validate_json(
+                            _row_str(existing, "payload_json", "reservation payload")
+                        )
+                        == reservation
+                    ):
+                        return BudgetDecision(
+                            status=BudgetDecisionStatus.ALLOW,
+                            metric=reservation.metric,
+                            unit=reservation.unit,
+                        )
+                    raise StorageOperationError("telemetry reservation identifier conflict")
+                limit = next(
+                    (item for item in policy.limits if item.metric is reservation.metric), None
+                )
+                if limit is None:
+                    _insert_reservation(connection, reservation)
+                    return BudgetDecision(
+                        status=BudgetDecisionStatus.ALLOW,
+                        metric=reservation.metric,
+                        unit=reservation.unit,
+                    )
+                if limit.currency != reservation.currency:
+                    return BudgetDecision(
+                        status=BudgetDecisionStatus.DENY_INVALID_REQUEST,
+                        metric=reservation.metric,
+                        unit=reservation.unit,
+                        reason_code="currency_mismatch",
+                    )
+                usage_metrics = _USAGE_METRICS_BY_BUDGET[reservation.metric]
+                placeholders = ", ".join("?" for _ in usage_metrics)
+                unavailable = connection.execute(
+                    "SELECT 1 FROM usage_records WHERE run_id = ? "
+                    f"AND metric IN ({placeholders}) AND provenance = 'UNAVAILABLE' LIMIT 1",
+                    (reservation.run_id.root, *(item.value for item in usage_metrics)),
+                ).fetchone()
+                unresolved = connection.execute(
+                    """SELECT 1 FROM budget_reservations AS r JOIN budget_settlements AS s
+                    ON s.reservation_id = r.reservation_id
+                    WHERE r.run_id = ? AND r.metric = ?
+                    AND json_extract(s.payload_json, '$.status') = 'UNRESOLVED' LIMIT 1""",
+                    (reservation.run_id.root, reservation.metric.value),
+                ).fetchone()
+                if unresolved is not None:
+                    return BudgetDecision(
+                        status=BudgetDecisionStatus.DENY_UNRESOLVED_RESERVATION,
+                        metric=reservation.metric,
+                        unit=reservation.unit,
+                        reason_code="unresolved_reservation",
+                    )
+                if require_known and unavailable is not None:
+                    return BudgetDecision(
+                        status=BudgetDecisionStatus.DENY_USAGE_UNAVAILABLE,
+                        metric=reservation.metric,
+                        unit=reservation.unit,
+                        reason_code="usage_unavailable",
+                    )
+                if reservation.metric is BudgetMetric.TOTAL_DURATION:
+                    overage = connection.execute(
+                        """SELECT 1 FROM usage_records WHERE run_id = ?
+                        AND metric = 'VALIDATION_DURATION'
+                        AND json_extract(payload_json, '$.reason_code') =
+                        'validation_duration_overage' LIMIT 1""",
+                        (reservation.run_id.root,),
+                    ).fetchone()
+                    if overage is not None:
+                        return BudgetDecision(
+                            status=BudgetDecisionStatus.DENY_LIMIT_EXHAUSTED,
+                            metric=reservation.metric,
+                            unit=reservation.unit,
+                            reason_code="validation_duration_overage",
+                        )
+                if limit.integer_limit is not None:
+                    used_row = connection.execute(
+                        "SELECT COALESCE(SUM(json_extract(payload_json, '$.integer_value')), 0) "
+                        "FROM usage_records WHERE run_id = ? "
+                        f"AND metric IN ({placeholders}) AND provenance != 'UNAVAILABLE'",
+                        (reservation.run_id.root, *(item.value for item in usage_metrics)),
+                    ).fetchone()
+                    reserved_row = connection.execute(
+                        """SELECT COALESCE(
+                        SUM(json_extract(r.payload_json, '$.integer_reserved')), 0
+                        )
+                        FROM budget_reservations AS r LEFT JOIN budget_settlements AS s
+                        ON s.reservation_id = r.reservation_id WHERE r.run_id = ? AND r.metric = ?
+                        AND s.reservation_id IS NULL""",
+                        (reservation.run_id.root, reservation.metric.value),
+                    ).fetchone()
+                    remaining = (
+                        limit.integer_limit
+                        - _row_int(used_row, 0, "usage total")
+                        - _row_int(reserved_row, 0, "reservation total")
+                    )
+                    if (
+                        reservation.integer_reserved is None
+                        or reservation.integer_reserved > remaining
+                    ):
+                        return BudgetDecision(
+                            status=BudgetDecisionStatus.DENY_LIMIT_EXHAUSTED,
+                            metric=reservation.metric,
+                            unit=reservation.unit,
+                            remaining_integer=max(0, remaining),
+                            reason_code="limit_exhausted",
+                        )
+                    _insert_reservation(connection, reservation)
+                    return BudgetDecision(
+                        status=BudgetDecisionStatus.ALLOW,
+                        metric=reservation.metric,
+                        unit=reservation.unit,
+                        remaining_integer=remaining,
+                    )
+                assert limit.decimal_limit is not None
+                usage_rows = connection.execute(
+                    "SELECT * FROM usage_records WHERE run_id = ? "
+                    f"AND metric IN ({placeholders}) AND provenance != 'UNAVAILABLE'",
+                    (reservation.run_id.root, *(item.value for item in usage_metrics)),
+                ).fetchall()
+                reservation_rows = connection.execute(
+                    """SELECT r.* FROM budget_reservations AS r
+                    LEFT JOIN budget_settlements AS s ON s.reservation_id = r.reservation_id
+                    WHERE r.run_id = ? AND r.metric = ? AND s.reservation_id IS NULL""",
+                    (reservation.run_id.root, reservation.metric.value),
+                ).fetchall()
+                consumed = sum(
+                    (item.decimal_value or Decimal("0"))
+                    for item in (_deserialize_usage_record(row) for row in usage_rows)
+                )
+                active = sum(
+                    (item.decimal_reserved or Decimal("0"))
+                    for item in (_deserialize_reservation(row) for row in reservation_rows)
+                )
+                remaining_decimal = limit.decimal_limit - consumed - active
+                if (
+                    reservation.decimal_reserved is None
+                    or reservation.decimal_reserved > remaining_decimal
+                ):
+                    return BudgetDecision(
+                        status=BudgetDecisionStatus.DENY_LIMIT_EXHAUSTED,
+                        metric=reservation.metric,
+                        unit=reservation.unit,
+                        remaining_decimal=max(Decimal("0"), remaining_decimal),
+                        reason_code="limit_exhausted",
+                    )
+                _insert_reservation(connection, reservation)
+                return BudgetDecision(
+                    status=BudgetDecisionStatus.ALLOW,
+                    metric=reservation.metric,
+                    unit=reservation.unit,
+                    remaining_decimal=remaining_decimal,
+                )
+        except StorageError:
+            raise
+        except sqlite3.DatabaseError:
+            raise StorageOperationError("atomically reserve budget") from None
+
+    def settle(self, settlement: BudgetSettlement) -> bool:
+        try:
+            with (
+                self._connect(read_only=False, require_existing=True) as connection,
+                self._transaction(connection, write=True),
+            ):
+                self._assert_current_schema(connection)
+                reservation = connection.execute(
+                    "SELECT 1 FROM budget_reservations WHERE reservation_id = ?",
+                    (settlement.reservation_id,),
+                ).fetchone()
+                if reservation is None:
+                    raise StorageOperationError("settle unknown reservation")
+                existing = connection.execute(
+                    "SELECT payload_json FROM budget_settlements WHERE reservation_id = ?",
+                    (settlement.reservation_id,),
+                ).fetchone()
+                if existing is not None:
+                    if (
+                        _deserialize_settlement(
+                            _row_str(existing, "payload_json", "settlement payload")
+                        )
+                        == settlement
+                    ):
+                        return False
+                    raise StorageOperationError("budget settlement identifier conflict")
+                connection.execute(
+                    "INSERT INTO budget_settlements "
+                    "(reservation_id, payload_version, payload_json) VALUES (?, ?, ?)",
+                    (
+                        settlement.reservation_id,
+                        settlement.schema_version,
+                        settlement.model_dump_json(),
+                    ),
+                )
+                return True
+        except StorageError:
+            raise
+        except sqlite3.DatabaseError:
+            raise StorageOperationError("settle budget reservation") from None
+
+    def settle_reservation(
+        self,
+        reservation: BudgetReservation,
+        settlement: BudgetSettlement,
+        usage_records: tuple[UsageRecord, ...],
+    ) -> bool:
+        """Atomically append normalized usage and settle its exact reservation boundary."""
+        if settlement.reservation_id != reservation.id:
+            raise StorageOperationError("settlement reservation correlation mismatch")
+        if settlement.settled_at < reservation.created_at:
+            raise StorageOperationError("settlement timestamp precedes reservation")
+        if reservation.integer_reserved is not None:
+            if settlement.status is ReservationStatus.SETTLED and (
+                settlement.integer_consumed is None
+                or settlement.decimal_consumed is not None
+                or settlement.currency is not None
+            ):
+                raise StorageOperationError("integer settlement unit mismatch")
+        elif settlement.status is ReservationStatus.SETTLED and (
+            settlement.decimal_consumed is None
+            or settlement.integer_consumed is not None
+            or settlement.currency != reservation.currency
+        ):
+            raise StorageOperationError("Decimal settlement unit mismatch")
+        if any(
+            item.run_id != reservation.run_id
+            or item.work_package_id != reservation.work_package_id
+            or item.attempt_id != reservation.attempt_id
+            or item.invocation_id != reservation.invocation_id
+            for item in usage_records
+        ):
+            raise StorageOperationError("settlement usage correlation mismatch")
+        try:
+            with (
+                self._connect(read_only=False, require_existing=True) as connection,
+                self._transaction(connection, write=True),
+            ):
+                self._assert_current_schema(connection)
+                persisted_row = connection.execute(
+                    "SELECT * FROM budget_reservations WHERE reservation_id = ?", (reservation.id,)
+                ).fetchone()
+                if persisted_row is None:
+                    raise StorageOperationError("settle unknown reservation")
+                if _deserialize_reservation(persisted_row) != reservation:
+                    raise StorageOperationError("settlement reservation payload conflict")
+                existing = connection.execute(
+                    "SELECT payload_json FROM budget_settlements WHERE reservation_id = ?",
+                    (reservation.id,),
+                ).fetchone()
+                if existing is not None:
+                    if (
+                        _deserialize_settlement(
+                            _row_str(existing, "payload_json", "settlement payload")
+                        )
+                        != settlement
+                    ):
+                        raise StorageOperationError("budget settlement identifier conflict")
+                    for record in usage_records:
+                        row = connection.execute(
+                            "SELECT payload_json FROM usage_records WHERE usage_id = ?",
+                            (record.id,),
+                        ).fetchone()
+                        if (
+                            row is None
+                            or _row_str(row, "payload_json", "usage payload")
+                            != record.model_dump_json()
+                        ):
+                            raise StorageOperationError("settlement usage retry conflict")
+                    return False
+                for record in usage_records:
+                    existing_usage = connection.execute(
+                        "SELECT payload_json FROM usage_records WHERE usage_id = ?", (record.id,)
+                    ).fetchone()
+                    if existing_usage is not None:
+                        if (
+                            _row_str(existing_usage, "payload_json", "usage payload")
+                            != record.model_dump_json()
+                        ):
+                            raise StorageOperationError("usage identifier conflict")
+                        continue
+                    connection.execute(
+                        """INSERT INTO usage_records (usage_id, run_id, correlation_key, metric,
+                        provenance, payload_version, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            record.id,
+                            record.run_id.root,
+                            record.correlation_key,
+                            record.metric.value,
+                            record.provenance.value,
+                            record.schema_version,
+                            record.model_dump_json(),
+                        ),
+                    )
+                connection.execute(
+                    "INSERT INTO budget_settlements "
+                    "(reservation_id, payload_version, payload_json) VALUES (?, ?, ?)",
+                    (reservation.id, settlement.schema_version, settlement.model_dump_json()),
+                )
+                return True
+        except StorageError:
+            raise
+        except sqlite3.DatabaseError:
+            raise StorageOperationError("atomically settle reservation") from None
+
+    def _append_telemetry(
+        self,
+        *,
+        table: str,
+        identifier_column: str,
+        identifier: str,
+        payload: UsageRecord | BudgetReservation,
+        values: tuple[object, ...],
+        statement: str,
+    ) -> bool:
+        try:
+            with (
+                self._connect(read_only=False, require_existing=True) as connection,
+                self._transaction(connection, write=True),
+            ):
+                self._assert_current_schema(connection)
+                existing = connection.execute(
+                    f"SELECT payload_json FROM {table} WHERE {identifier_column} = ?",
+                    (identifier,),
+                ).fetchone()
+                if existing is not None:
+                    text = _row_str(existing, "payload_json", "telemetry payload")
+                    if text == payload.model_dump_json():
+                        return False
+                    raise StorageOperationError("telemetry identifier conflict")
+                connection.execute(statement, values)
+                return True
+        except StorageError:
+            raise
+        except sqlite3.DatabaseError:
+            raise StorageOperationError("append telemetry") from None
+
     def persist_transition(
         self,
         expected: StoredRun,
@@ -739,10 +1411,9 @@ class SQLiteRunRepository:
             raise MalformedMigrationError("database is not at the complete current schema")
 
         object_rows = connection.execute(
-            """
-            SELECT name, type FROM sqlite_master
-            WHERE name IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            "SELECT name, type FROM sqlite_master WHERE name IN ("
+            + ", ".join("?" for _ in _REQUIRED_OBJECTS)
+            + ")",
             tuple(_REQUIRED_OBJECTS),
         ).fetchall()
         objects = {
@@ -961,6 +1632,77 @@ def _deserialize_orchestration_record(row: sqlite3.Row) -> OrchestrationRecord:
     ):
         raise CorruptStorageError("orchestration normalized fields do not match its payload")
     return record
+
+
+def _deserialize_usage_record(row: sqlite3.Row) -> UsageRecord:
+    try:
+        value = UsageRecord.model_validate_json(_row_str(row, "payload_json", "usage payload"))
+    except ValidationError:
+        raise CorruptStorageError("usage payload failed telemetry validation") from None
+    if (
+        value.id != _row_str(row, "usage_id", "usage identifier")
+        or value.run_id.root != _row_str(row, "run_id", "usage run identifier")
+        or value.correlation_key != _row_str(row, "correlation_key", "usage correlation")
+        or value.metric.value != _row_str(row, "metric", "usage metric")
+        or value.provenance.value != _row_str(row, "provenance", "usage provenance")
+        or value.schema_version != _row_int(row, "payload_version", "usage payload version")
+    ):
+        raise CorruptStorageError("usage normalized fields do not match its payload")
+    return value
+
+
+def _deserialize_reservation(row: sqlite3.Row) -> BudgetReservation:
+    try:
+        value = BudgetReservation.model_validate_json(
+            _row_str(row, "payload_json", "reservation payload")
+        )
+    except ValidationError:
+        raise CorruptStorageError("reservation payload failed telemetry validation") from None
+    if (
+        value.id != _row_str(row, "reservation_id", "reservation identifier")
+        or value.run_id.root != _row_str(row, "run_id", "reservation run identifier")
+        or value.idempotency_key != _row_str(row, "idempotency_key", "reservation idempotency")
+        or value.metric.value != _row_str(row, "metric", "reservation metric")
+        or value.schema_version != _row_int(row, "payload_version", "reservation payload version")
+    ):
+        raise CorruptStorageError("reservation normalized fields do not match its payload")
+    return value
+
+
+def _deserialize_settlement(payload: str) -> BudgetSettlement:
+    try:
+        return BudgetSettlement.model_validate_json(payload)
+    except ValidationError:
+        raise CorruptStorageError("settlement payload failed telemetry validation") from None
+
+
+_USAGE_METRICS_BY_BUDGET = {
+    BudgetMetric.BUILD_ATTEMPTS: (UsageMetric.BUILD_ATTEMPTS,),
+    BudgetMetric.REVIEW_ATTEMPTS: (UsageMetric.REVIEW_ATTEMPTS,),
+    BudgetMetric.REPAIR_ATTEMPTS: (UsageMetric.REPAIR_ATTEMPTS,),
+    BudgetMetric.TOTAL_DURATION: (
+        UsageMetric.COMMAND_DURATION,
+        UsageMetric.VALIDATION_DURATION,
+        UsageMetric.PROVIDER_DURATION,
+    ),
+    BudgetMetric.REMOTE_TOKENS: (UsageMetric.TOTAL_TOKENS,),
+    BudgetMetric.ESTIMATED_COST: (UsageMetric.ESTIMATED_COST,),
+}
+
+
+def _insert_reservation(connection: sqlite3.Connection, reservation: BudgetReservation) -> None:
+    connection.execute(
+        """INSERT INTO budget_reservations (reservation_id, run_id, idempotency_key, metric,
+        payload_version, payload_json) VALUES (?, ?, ?, ?, ?, ?)""",
+        (
+            reservation.id,
+            reservation.run_id.root,
+            reservation.idempotency_key,
+            reservation.metric.value,
+            reservation.schema_version,
+            reservation.model_dump_json(),
+        ),
+    )
 
 
 def _metadata_json(metadata: tuple[TransitionMetadata, ...]) -> str:

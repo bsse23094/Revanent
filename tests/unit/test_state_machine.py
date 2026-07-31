@@ -35,6 +35,7 @@ EXPECTED_TRANSITIONS = {
     },
     RunState.CONTEXT_PREPARING: {
         RunState.WORKSPACE_PREPARING,
+        RunState.FAILED,
         RunState.BLOCKED,
         RunState.CANCELLED,
     },

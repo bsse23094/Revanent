@@ -141,6 +141,19 @@ maintained in `ROADMAP.md` and package completion evidence.
 | OPS-004 | P4-002 | In-progress/approved/failed/blocked/cancelled/stale and attempt/limit/reconciliation outcomes remain explicit |
 | OPS-005 | P4-002 | Every accepted state change and orchestration decision is persisted under optimistic run revision/state ownership |
 | OPS-007 | P4-002 | Orchestration evidence schema version 1 and SQLite schema migration 2 are frozen and contract tested |
+| FR-003 | P5-001 | Typed multi-source discovery, deterministic scope/priority/expansion, safe content handling, and reason-annotated canonical manifest |
+| FR-005 | P5-001 | Bounded packages project through the existing provider-neutral `AgentRequest.context` field without provider syntax |
+| FR-011 | P5-001 | CONTEXT_PREPARING persists append-only intent and metadata-only manifest outcome through SQLite migration 3 |
+| NFR-002/003/004/006 | P5-001 | Context port contracts, injected selector/reader, canonical ordering/IDs, strict failures, and mypy-tested boundaries |
+| NFR-007 | P5-001 | Per-source/item/artifact/aggregate limits, explicit UTF-8 truncation, exclusion, deduplication, and byte accounting |
+| SEC-003/004/006/007 | P5-001 | Redaction/credential refusal, structural scope/link/race checks, provenance labels, and no raw body persistence |
+| SEC-008 | P5-001 | Adversarial discovery/path/junction/race/secret/injection/artifact/manifest/orchestration tests |
+| OPS-001/002/007 | P5-001 | Durable manifest evidence, exact continuation match, strict context/schema/storage versions, and forward migration 3 |
+| FR-010 | P5-002 | Provenance-labelled context bytes, validation duration, role attempts, structured provider tokens, optional Decimal cost evidence, and exact hard-budget decisions |
+| NFR-002/003/004/006 | P5-002 | Provider-neutral immutable contracts, deterministic canonical IDs, fail-closed unavailable/unresolved behavior, and strict typed boundaries |
+| NFR-008 | P5-002 | Atomic reservation before launch, atomic settlement after outcome, exact integer/Decimal boundaries, overage denial, and real SQLite race coverage |
+| SEC-003/006/007/008 | P5-002 | Metadata-only persistence, no provenance laundering/bytes-to-token inference/provider-controlled limits, and adversarial privacy/concurrency tests |
+| OPS-001/002/005/007 | P5-002 | Durable usage lifecycle, restart settlement without replay, unresolved preservation, and SQLite migration 4 |
 
 P4-002 now owns library-level repository/worktree verification and in-flight side-effect
 reconciliation. P6-002 remains responsible for the user-facing resume/status/report

@@ -23,7 +23,9 @@ _TRANSITIONS: Mapping[RunState, frozenset[RunState]] = MappingProxyType(
     {
         RunState.CREATED: frozenset({RunState.PLANNING, RunState.BLOCKED}) | _CANCELLED,
         RunState.PLANNING: frozenset({RunState.CONTEXT_PREPARING, RunState.BLOCKED}) | _CANCELLED,
-        RunState.CONTEXT_PREPARING: frozenset({RunState.WORKSPACE_PREPARING, RunState.BLOCKED})
+        RunState.CONTEXT_PREPARING: frozenset(
+            {RunState.WORKSPACE_PREPARING, RunState.BLOCKED, RunState.FAILED}
+        )
         | _CANCELLED,
         RunState.WORKSPACE_PREPARING: frozenset({RunState.BUILDING, RunState.BLOCKED}) | _CANCELLED,
         RunState.BUILDING: frozenset({RunState.VALIDATING, RunState.FAILED, RunState.BLOCKED})

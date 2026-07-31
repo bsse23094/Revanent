@@ -132,6 +132,35 @@ journal-insert rollback before external launch. Storage tests prove version-1-to
 migration preserves runs. The full P4-002 suite is fake-only and makes no provider/model or
 network call.
 
+P5-001 contract tests freeze context schema version 1, canonical round trips, unknown-version
+and field rejection, metadata/body separation, byte/count/ratio/digest invariants, bounded
+exclusion ledgers, AgentRequest projection, and the context/orchestration/storage dependency
+boundaries. Unit tests cover source-order-independent reason merging, explicit/change/diff/
+governance/validation/review/attempt/decision discovery, bounded Python imports and exact-name
+tests, role priority, scope precedence, required/preferred/optional eviction, binary/encoding/
+missing/oversize handling, deterministic UTF-8 truncation, race retry/exhaustion, secret
+patterns and token URLs, prompt-injection provenance, artifact correlation/integrity, content
+aliases, trust-separated deduplication, and exact byte reduction.
+
+Integration uses temporary roots and the real context reader to prove current-platform
+symlink or Windows reparse-point junction escape refusal. E2E orchestration tests use the real
+selector, temporary SQLite schema 4, fake Git/agents, deterministic clocks, and scripted local
+validation to prove CONTEXT_PREPARING intent/outcome durability, metadata-only persistence,
+successful context propagation, required-context provider refusal, stale/cancellation
+prelaunch behavior, and all prior P4 crash/repair/approval invariants. No live provider,
+network or repository Git mutation appears in the suite.
+
+P5-002 contract and architecture tests freeze telemetry schema/provenance/unit rules, reject
+raw/sensitive payload fields, distinguish unavailable from zero and unresolved lifecycle,
+reject token contradictions, unsupported categories, and float money, and exclude SQLite,
+subprocess, Git, network, provider implementations, transitions, and pricing lookup from the
+telemetry boundary. Real temporary SQLite integration uses barriers and concurrent threads to
+race final attempt, token, duration, and Decimal-cost capacity; identical/conflicting
+reservations and settlements; stale revisions; and injected transactional rollback. E2E tests
+prove intent/reservation/invocation/outcome/settlement ordering, validation timeout capping,
+overage, hard external-budget prelaunch refusal, restart settlement without replay, and durable
+unresolved recovery. All provider evidence remains deterministic fake/local evidence.
+
 Canonical local and CI gates:
 
 ```text

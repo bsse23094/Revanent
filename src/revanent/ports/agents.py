@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -222,6 +223,25 @@ class WorkspaceKind(StrEnum):
     WORKTREE = "WORKTREE"
 
 
+class AgentContextAuthority(StrEnum):
+    REVANENT_SYSTEM_POLICY = "REVANENT_SYSTEM_POLICY"
+    REPOSITORY_GOVERNANCE = "REPOSITORY_GOVERNANCE"
+    TASK_INSTRUCTION = "TASK_INSTRUCTION"
+    LOCAL_DETERMINISTIC_EVIDENCE = "LOCAL_DETERMINISTIC_EVIDENCE"
+    REPOSITORY_CONTENT = "REPOSITORY_CONTENT"
+    PROVIDER_CLAIM = "PROVIDER_CLAIM"
+
+
+class AgentContextTrust(StrEnum):
+    TRUSTED_CONTROL = "TRUSTED_CONTROL"
+    TRUSTED_LOCAL_EVIDENCE = "TRUSTED_LOCAL_EVIDENCE"
+    REPOSITORY_GOVERNANCE = "REPOSITORY_GOVERNANCE"
+    UNTRUSTED_REPOSITORY = "UNTRUSTED_REPOSITORY"
+    UNTRUSTED_TEST = "UNTRUSTED_TEST"
+    UNTRUSTED_PROVIDER = "UNTRUSTED_PROVIDER"
+    UNTRUSTED_DIAGNOSTIC = "UNTRUSTED_DIAGNOSTIC"
+
+
 class CapabilityMetadata(_AgentModel):
     key: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")]
     value: Annotated[str, Field(min_length=1, max_length=256)]
@@ -336,9 +356,57 @@ class AgentArtifactReference(_AgentModel):
 
 
 class ContextReference(_AgentModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        strict=True,
+        str_strip_whitespace=False,
+    )
+
     reference_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")]
     purpose: Annotated[str, Field(min_length=1, max_length=256)]
-    artifact: AgentArtifactReference
+    artifact: AgentArtifactReference | None = None
+    content: Annotated[str, Field(max_length=262_144)] | None = None
+    authority: AgentContextAuthority | None = None
+    trust: AgentContextTrust | None = None
+    content_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
+    source_bytes: int | None = Field(default=None, ge=0, le=2_097_152)
+    retained_bytes: int | None = Field(default=None, ge=0, le=262_144)
+    complete: bool | None = None
+    redacted: bool | None = None
+
+    @model_validator(mode="after")
+    def _validate_context(self) -> Self:
+        if (self.artifact is None) == (self.content is None):
+            raise ValueError("context references require exactly one artifact or inline content")
+        inline_metadata = (
+            self.authority,
+            self.trust,
+            self.content_sha256,
+            self.source_bytes,
+            self.retained_bytes,
+            self.complete,
+            self.redacted,
+        )
+        if self.content is None:
+            if any(value is not None for value in inline_metadata):
+                raise ValueError("artifact context cannot carry inline-content metadata")
+            return self
+        if any(value is None for value in inline_metadata):
+            raise ValueError("inline context requires complete provenance and byte metadata")
+        assert self.source_bytes is not None
+        assert self.retained_bytes is not None
+        assert self.complete is not None
+        encoded = self.content.encode("utf-8")
+        if len(encoded) != self.retained_bytes:
+            raise ValueError("inline context retained byte count is inconsistent")
+        if hashlib.sha256(encoded).hexdigest() != self.content_sha256:
+            raise ValueError("inline context digest is inconsistent")
+        if self.complete and self.source_bytes != self.retained_bytes:
+            raise ValueError("complete inline context must retain all authorized bytes")
+        if not self.complete and self.source_bytes <= self.retained_bytes:
+            raise ValueError("truncated inline context must omit authorized bytes")
+        return self
 
 
 class PriorFindingReference(_AgentModel):
@@ -422,6 +490,8 @@ class AgentRequest(_AgentModel):
         _require_sorted_unique(
             self.context, label="context references", key=lambda item: item.reference_id
         )
+        if sum(item.retained_bytes or 0 for item in self.context) > MAX_AGENT_OUTPUT_BYTES:
+            raise ValueError("inline context exceeds the aggregate agent request byte limit")
         if len(self.allowed_environment_names) > MAX_AGENT_ENVIRONMENT_NAMES:
             raise ValueError(
                 f"environment-name allowlist is limited to {MAX_AGENT_ENVIRONMENT_NAMES} entries"

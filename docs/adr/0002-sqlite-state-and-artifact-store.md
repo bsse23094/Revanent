@@ -56,6 +56,28 @@ Journal insertion uses the same short-lived connection, foreign-key enforcement,
 `BEGIN IMMEDIATE`, and complete optimistic run-snapshot comparison as transition writes.
 Version-1 databases migrate forward without changing existing runs or events.
 
+## P5-001 extension
+
+Forward migration 3 transactionally rebuilds the orchestration table's attempt-kind check to
+admit `CONTEXT`, copies existing P4 rows in canonical run/sequence order, drops the prior table,
+and recreates its index and append-only triggers. It adds no table and does not persist selected
+context bodies. Context intents and metadata-only version-1 manifests use the existing strict
+record payload, normalized correlation, revision/state guard, and idempotency rules. Schema-2
+databases migrate forward without changing runs, events, or P4 orchestration evidence.
+
+## P5-002 extension
+
+Forward migration 4 adds append-only `usage_records`, `budget_reservations`, and
+`budget_settlements` with run foreign keys, normalized metric/provenance/idempotency columns,
+strict versioned JSON, indexes, and update/delete triggers. `BEGIN IMMEDIATE` atomically
+evaluates settled usage plus active reservations before inserting capacity. Usage and its
+settlement commit together; identical retries are idempotent and conflicts fail. Integer and
+Python `Decimal` arithmetic remain exact. Metadata contains no prompts, context bodies, source,
+raw output, credentials, or environment values. Schema-3 databases migrate without changing
+existing run, event, orchestration, or context evidence.
+
 ## Status
+
+Extended through SQLite schema version 4 by P5-002 on 2026-07-31.
 
 Accepted — 2026-07-29; SQLite portion implemented and verified in P1-002 on 2026-07-30.

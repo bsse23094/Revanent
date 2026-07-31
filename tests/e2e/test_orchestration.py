@@ -4,6 +4,7 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,12 @@ from revanent.agents import (
     agent_request_digest,
 )
 from revanent.commands import CancellationSource
+from revanent.context import (
+    ContextDiscoveryInput,
+    ContextSelectionRequest,
+    ContextSelectionResult,
+    ContextSelector,
+)
 from revanent.domain import (
     AttemptCounters,
     BudgetLimits,
@@ -45,6 +52,11 @@ from revanent.ports import (
     AgentResponse,
     AgentRole,
     AgentStatus,
+    BudgetDecision,
+    BudgetMetric,
+    BudgetPolicy,
+    BudgetReservation,
+    BudgetSettlement,
     BuilderPayload,
     CancellationToken,
     CapturedOutput,
@@ -54,18 +66,22 @@ from revanent.ports import (
     CommandResult,
     CommandStatus,
     ConcurrentRunUpdateError,
+    ContextReference,
     DuplicateEventError,
     GitError,
     GitErrorCategory,
     GitOperationStatus,
     LimitOutcome,
+    OrchestrationRecordStage,
     OrchestrationRequest,
     OrchestrationStatus,
     OrchestrationStep,
     RepairerPayload,
     RepositoryIdentity,
+    RepositoryPath,
     RepositorySnapshot,
     RepositoryStatus,
+    ReservationStatus,
     RetryDisposition,
     ReviewerPayload,
     ScenarioId,
@@ -73,7 +89,11 @@ from revanent.ports import (
     StorageOperationError,
     StoredRun,
     StructuredParseStatus,
+    UsageMetric,
+    UsageProvenance,
+    UsageRecord,
     ValidationArtifactPolicy,
+    ValidationAttempt,
     ValidationCommand,
     ValidationCommandClass,
     ValidationCommandId,
@@ -94,6 +114,7 @@ from revanent.ports import (
 )
 from revanent.review import LocalApprovalEvidence, ReviewGate
 from revanent.storage import SQLiteRunRepository
+from revanent.telemetry import TelemetryService
 from revanent.validation import ValidationRunner
 from tests.agent_factories import make_capabilities, make_request
 
@@ -110,6 +131,16 @@ class DeterministicClock:
     def now(self) -> datetime:
         self.current += timedelta(milliseconds=100)
         return self.current
+
+
+class CountingContextSelector(ContextSelector):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def select(self, request: ContextSelectionRequest) -> ContextSelectionResult:
+        self.calls += 1
+        return super().select(request)
 
 
 @dataclass
@@ -289,7 +320,12 @@ def _run(
     )
 
 
-def _prototype(role: AgentRole, target: Path, worktree_id: WorktreeId) -> AgentRequest:
+def _prototype(
+    role: AgentRole,
+    target: Path,
+    worktree_id: WorktreeId,
+    context: tuple[ContextReference, ...] = (),
+) -> AgentRequest:
     request = make_request(role)
     values = request.model_dump(mode="python")
     values.update(
@@ -300,6 +336,7 @@ def _prototype(role: AgentRole, target: Path, worktree_id: WorktreeId) -> AgentR
             reference_id=worktree_id.root,
             root=target,
         ),
+        context=context,
     )
     return AgentRequest.model_validate(values)
 
@@ -429,6 +466,7 @@ def _harness(
     scope_justified: bool = True,
     clock_start: datetime = NOW,
     run: Run | None = None,
+    context_selector: ContextSelector | None = None,
 ) -> tuple[
     OrchestrationService,
     OrchestrationRequest,
@@ -444,6 +482,9 @@ def _harness(
     target = (tmp_path / "owned-worktree").resolve()
     source.mkdir()
     target.mkdir()
+    (source / "src").mkdir()
+    (source / "src" / "context.py").write_text("VALUE = 1\n", encoding="utf-8")
+    active_run = run or _run()
     worktree_id = WorktreeId(f"wt_{'c' * 32}")
     worktree = WorktreeCreationRequest(
         source_path=source,
@@ -452,10 +493,46 @@ def _harness(
         branch_name="revanent/P4-002",
         run_id=RUN_ID.root,
     )
-    builder_request = _prototype(AgentRole.BUILDER, target, worktree_id)
-    reviewer_request = _prototype(AgentRole.REVIEWER, target, worktree_id)
-    local_request = _prototype(AgentRole.BUILDER, target, worktree_id)
-    codex_request = _prototype(AgentRole.REPAIRER, target, worktree_id)
+    context_roles = [AgentRole.BUILDER, AgentRole.REVIEWER]
+    if codex_repairs:
+        context_roles.append(AgentRole.REPAIRER)
+    context_requests = tuple(
+        ContextSelectionRequest(
+            request_id=f"context.{role.value.lower()}",
+            run_id=RUN_ID,
+            work_package_id=WORK_PACKAGE_ID,
+            task=active_run.task,
+            role=role,
+            root=source,
+            repository_reference="repo.fixture",
+            worktree_reference=worktree_id.root,
+            discovery=ContextDiscoveryInput(explicit_paths=(RepositoryPath("src/context.py"),)),
+            trusted_controls=("Task scope is authoritative.",),
+            created_at=NOW,
+        )
+        for role in sorted(context_roles, key=lambda item: item.value)
+    )
+    selector = context_selector or ContextSelector()
+    references = {}
+    for context_request in context_requests:
+        selection = selector.select(context_request)
+        assert selection.package is not None
+        references[context_request.role] = selection.package.agent_references()
+    builder_request = _prototype(
+        AgentRole.BUILDER, target, worktree_id, references[AgentRole.BUILDER]
+    )
+    reviewer_request = _prototype(
+        AgentRole.REVIEWER, target, worktree_id, references[AgentRole.REVIEWER]
+    )
+    local_request = _prototype(
+        AgentRole.BUILDER, target, worktree_id, references[AgentRole.BUILDER]
+    )
+    codex_request = _prototype(
+        AgentRole.REPAIRER,
+        target,
+        worktree_id,
+        references.get(AgentRole.REPAIRER, ()),
+    )
     builder = (
         _adapter(
             AgentRole.BUILDER,
@@ -532,6 +609,7 @@ def _harness(
     request = OrchestrationRequest(
         run_id=RUN_ID,
         expected_revision=0,
+        context_requests=context_requests,
         worktree=worktree,
         builder_request=builder_request,
         reviewer_request=reviewer_request,
@@ -542,7 +620,7 @@ def _harness(
     )
     repository = SQLiteRunRepository(tmp_path / "state.db")
     repository.initialize()
-    repository.create_run(run or _run())
+    repository.create_run(active_run)
     git = FakeGitRepository(source, target, worktree_id)
     commands = ScriptedCommandRunner(validation_statuses)
     service = OrchestrationService(
@@ -558,6 +636,8 @@ def _harness(
         validation=ValidationRunner(commands),
         review_gate=ReviewGate(),
         local_evidence=EvidenceCollector(scope_justified=scope_justified),
+        context_selector=selector,
+        telemetry=TelemetryService(repository),
         clock=DeterministicClock(current=clock_start),
     )
     return (
@@ -602,11 +682,75 @@ def test_builder_validation_review_happy_path_reaches_approved(tmp_path: Path) -
     assert codex is None
     assert len(commands.requests) == 1
     assert repository.get_run(RUN_ID).run == result.run
+    context_usage = [
+        item for item in repository.list_usage_records(RUN_ID) if item.source.value == "CONTEXT"
+    ]
+    assert context_usage
+    assert all(item.provenance is UsageProvenance.MEASURED for item in context_usage)
+    assert all(item.unit.value in {"BYTES", "COMMANDS"} for item in context_usage)
 
     replay = service.execute(request)
     assert replay.status is OrchestrationStatus.APPROVED
     assert builder.invocation_count == reviewer.invocation_count == 1
     assert len(commands.requests) == 1
+
+
+def test_context_selector_runs_in_context_preparing_and_sqlite_keeps_only_manifest(
+    tmp_path: Path,
+) -> None:
+    selector = CountingContextSelector()
+    service, request, repository, git, builder, reviewer, _, _, _ = _harness(
+        tmp_path,
+        validation_statuses=(CommandStatus.SUCCESS,),
+        review_results=(_approved_review(),),
+        context_selector=selector,
+    )
+    preselection_calls = selector.calls
+
+    result = service.execute(request)
+
+    assert result.status is OrchestrationStatus.APPROVED
+    assert selector.calls == preselection_calls + 2
+    context_records = [
+        record for record in result.records if record.attempt.kind is OrchestrationStep.CONTEXT
+    ]
+    assert len(context_records) == 4
+    assert all(record.expected_state is RunState.CONTEXT_PREPARING for record in context_records)
+    with sqlite3.connect(repository.path) as connection:
+        payloads = tuple(
+            row[0]
+            for row in connection.execute(
+                "SELECT record_payload_json FROM orchestration_records "
+                "WHERE attempt_kind = 'CONTEXT'"
+            )
+        )
+    assert payloads and all("VALUE = 1" not in payload for payload in payloads)
+    assert git.create_count == builder.invocation_count == reviewer.invocation_count == 1
+
+
+def test_missing_required_context_blocks_before_workspace_or_provider(tmp_path: Path) -> None:
+    service, request, _, git, builder, reviewer, local, _, commands = _harness(
+        tmp_path,
+        validation_statuses=(CommandStatus.SUCCESS,),
+        review_results=(_approved_review(),),
+    )
+    missing_values = request.context_requests[0].model_dump(mode="python")
+    missing_values.update(
+        request_id="context.builder.missing",
+        discovery=ContextDiscoveryInput(explicit_paths=(RepositoryPath("src/missing.py"),)),
+    )
+    request_values = request.model_dump(mode="python")
+    request_values["context_requests"] = (
+        ContextSelectionRequest.model_validate(missing_values),
+        *request.context_requests[1:],
+    )
+
+    result = service.execute(OrchestrationRequest.model_validate(request_values))
+
+    assert result.status is OrchestrationStatus.BLOCKED
+    assert result.run.state is RunState.BLOCKED
+    assert git.create_count == builder.invocation_count == reviewer.invocation_count == 0
+    assert local.invocation_count == len(commands.requests) == 0
 
 
 def test_failed_validation_selects_one_local_repair_then_revalidates(
@@ -732,6 +876,8 @@ def test_concurrent_coordinators_share_one_durable_side_effect_boundary(
         validation=ValidationRunner(commands),
         review_gate=ReviewGate(),
         local_evidence=EvidenceCollector(),
+        context_selector=ContextSelector(),
+        telemetry=TelemetryService(repository),
         clock=DeterministicClock(),
     )
 
@@ -1021,7 +1167,7 @@ def test_failed_intent_persistence_rolls_back_and_launches_no_side_effect(
         service.execute(request)
 
     stored = repository.get_run(RUN_ID)
-    assert stored.run.state is RunState.WORKSPACE_PREPARING
+    assert stored.run.state is RunState.CONTEXT_PREPARING
     assert repository.list_orchestration_records(RUN_ID) == ()
     assert git.create_count == builder.invocation_count == reviewer.invocation_count == 0
     assert local.invocation_count == len(commands.requests) == 0
@@ -1206,3 +1352,413 @@ def test_total_duration_limit_is_checked_before_any_side_effect(tmp_path: Path) 
     assert result.limit_outcome is LimitOutcome.RUN_DURATION_EXHAUSTED
     assert git.create_count == builder.invocation_count == reviewer.invocation_count == 0
     assert local.invocation_count == len(commands.requests) == 0
+
+
+def test_validation_duration_boundary_is_durable_and_measured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, request, repository, _, _, _, _, _, commands = _harness(
+        tmp_path,
+        validation_statuses=(CommandStatus.SUCCESS,),
+        review_results=(_approved_review(),),
+    )
+    reserve_if_allowed = repository.reserve_if_allowed
+    settle_reservation = repository.settle_reservation
+    run_command = commands.run
+
+    def tracked_reserve(
+        reservation: BudgetReservation,
+        policy: BudgetPolicy,
+        *,
+        expected_revision: int | None = None,
+        require_known: bool = False,
+    ) -> BudgetDecision:
+        if reservation.metric is BudgetMetric.TOTAL_DURATION:
+            records = repository.list_orchestration_records(RUN_ID)
+            assert any(
+                record.stage is OrchestrationRecordStage.INTENT
+                and isinstance(record.attempt, ValidationAttempt)
+                for record in records
+            )
+            assert not any(
+                record.stage is OrchestrationRecordStage.OUTCOME
+                and isinstance(record.attempt, ValidationAttempt)
+                for record in records
+            )
+        return reserve_if_allowed(
+            reservation,
+            policy,
+            expected_revision=expected_revision,
+            require_known=require_known,
+        )
+
+    def tracked_command(command: CommandRequest) -> CommandResult:
+        assert any(
+            item.metric is BudgetMetric.TOTAL_DURATION and item.status is ReservationStatus.ACTIVE
+            for item in repository.list_reservations(RUN_ID)
+        )
+        return run_command(command)
+
+    def tracked_settlement(
+        reservation: BudgetReservation,
+        settlement: BudgetSettlement,
+        usage_records: tuple[UsageRecord, ...],
+    ) -> bool:
+        if reservation.metric is BudgetMetric.TOTAL_DURATION:
+            assert any(
+                record.stage is OrchestrationRecordStage.OUTCOME
+                and isinstance(record.attempt, ValidationAttempt)
+                for record in repository.list_orchestration_records(RUN_ID)
+            )
+        return settle_reservation(reservation, settlement, usage_records)
+
+    monkeypatch.setattr(repository, "reserve_if_allowed", tracked_reserve)
+    monkeypatch.setattr(commands, "run", tracked_command)
+    monkeypatch.setattr(repository, "settle_reservation", tracked_settlement)
+
+    result = service.execute(request)
+
+    assert result.status is OrchestrationStatus.APPROVED
+    durations = [
+        item
+        for item in repository.list_usage_records(RUN_ID)
+        if item.metric is UsageMetric.VALIDATION_DURATION
+    ]
+    assert len(durations) == 1
+    assert durations[0].provenance is UsageProvenance.MEASURED
+    assert durations[0].unit.value == "MILLISECONDS"
+    assert durations[0].integer_value is not None and durations[0].integer_value > 0
+    assert all(item.unit.value != "TOKENS" for item in durations)
+
+
+def test_validation_timeout_is_capped_and_overage_stops_later_consuming_work(
+    tmp_path: Path,
+) -> None:
+    service, request, repository, _, builder, reviewer, _, _, commands = _harness(
+        tmp_path,
+        validation_statuses=(CommandStatus.SUCCESS, CommandStatus.SUCCESS),
+        review_results=(_approved_review(),),
+        run=_run(duration_seconds=10),
+    )
+    first_plan = request.validation_plans[0]
+    first_command_data = first_plan.commands[0].model_dump(mode="python")
+    first_command_data["timeout_seconds"] = 1
+    second_command_data = dict(first_command_data)
+    second_command_data.update(
+        id=ValidationCommandId("vcmd_lint"),
+        name="lint",
+        arguments=("fixture", "lint"),
+    )
+    plan_data = first_plan.model_dump(mode="python")
+    plan_data["commands"] = (
+        ValidationCommand.model_validate(first_command_data),
+        ValidationCommand.model_validate(second_command_data),
+    )
+    request_data = request.model_dump(mode="python")
+    request_data["validation_plans"] = (
+        ValidationPlan.model_validate(plan_data),
+        *request.validation_plans[1:],
+    )
+
+    result = service.execute(OrchestrationRequest.model_validate(request_data))
+
+    assert result.status is OrchestrationStatus.FAILED
+    assert result.limit_outcome is LimitOutcome.RUN_DURATION_EXHAUSTED
+    assert builder.invocation_count == 1
+    assert reviewer.invocation_count == 0
+    assert len(commands.requests) == 2
+    assert all(command.timeout_seconds == 1 for command in commands.requests)
+    duration_reservation = next(
+        item
+        for item in repository.list_reservations(RUN_ID)
+        if item.metric is BudgetMetric.TOTAL_DURATION
+    )
+    duration_usage = next(
+        item
+        for item in repository.list_usage_records(RUN_ID)
+        if item.metric is UsageMetric.VALIDATION_DURATION
+    )
+    assert duration_reservation.status is ReservationStatus.SETTLED
+    assert duration_usage.integer_value is not None
+    assert duration_usage.integer_value > (duration_reservation.integer_reserved or 0)
+
+
+def test_validation_plan_timeout_is_reduced_to_remaining_run_duration(tmp_path: Path) -> None:
+    service, request, repository, _, builder, _reviewer, _, _, commands = _harness(
+        tmp_path,
+        validation_statuses=(CommandStatus.SUCCESS,),
+        review_results=(_approved_review(),),
+        run=_run(duration_seconds=5),
+    )
+
+    service.execute(request)
+
+    assert builder.invocation_count == 1
+    assert len(commands.requests) == 1
+    assert 0 < commands.requests[0].timeout_seconds < 300
+    reservation = next(
+        item
+        for item in repository.list_reservations(RUN_ID)
+        if item.metric is BudgetMetric.TOTAL_DURATION
+    )
+    assert reservation.integer_reserved == int(commands.requests[0].timeout_seconds * 1_000)
+
+
+def test_persisted_agent_outcome_settles_after_restart_without_reinvoke(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, request, repository, git, builder, reviewer, local, codex, commands = _harness(
+        tmp_path,
+        validation_statuses=(CommandStatus.SUCCESS,),
+        review_results=(_approved_review(),),
+    )
+    settle_reservation = repository.settle_reservation
+    failed = False
+
+    def fail_agent_settlement_once(
+        reservation: BudgetReservation,
+        settlement: BudgetSettlement,
+        usage_records: tuple[UsageRecord, ...],
+    ) -> bool:
+        nonlocal failed
+        if reservation.metric is BudgetMetric.BUILD_ATTEMPTS and not failed:
+            failed = True
+            raise StorageOperationError("simulated agent settlement interruption")
+        return settle_reservation(reservation, settlement, usage_records)
+
+    monkeypatch.setattr(repository, "settle_reservation", fail_agent_settlement_once)
+    with pytest.raises(StorageOperationError, match="agent settlement interruption"):
+        service.execute(request)
+    assert builder.invocation_count == 1
+
+    reopened = SQLiteRunRepository(tmp_path / "state.db")
+    resumed_service = OrchestrationService(
+        runs=reopened,
+        journal=reopened,
+        git=git,
+        adapters=OrchestrationAdapters(
+            builder=builder,
+            reviewer=reviewer,
+            local_repair=local,
+            codex_repair=codex,
+        ),
+        validation=ValidationRunner(commands),
+        review_gate=ReviewGate(),
+        local_evidence=EvidenceCollector(),
+        context_selector=ContextSelector(),
+        telemetry=TelemetryService(reopened),
+        clock=DeterministicClock(),
+    )
+    request_data = request.model_dump(mode="python")
+    request_data["expected_revision"] = reopened.get_run(RUN_ID).revision
+
+    resumed = resumed_service.execute(OrchestrationRequest.model_validate(request_data))
+
+    assert resumed.status is OrchestrationStatus.APPROVED
+    assert builder.invocation_count == 1
+    assert (
+        len(
+            [
+                item
+                for item in reopened.list_usage_records(RUN_ID)
+                if item.metric is UsageMetric.BUILD_ATTEMPTS
+            ]
+        )
+        == 1
+    )
+
+
+def test_persisted_validation_outcome_settles_after_restart_without_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, request, repository, git, builder, reviewer, local, codex, commands = _harness(
+        tmp_path,
+        validation_statuses=(CommandStatus.SUCCESS,),
+        review_results=(_approved_review(),),
+    )
+    settle_reservation = repository.settle_reservation
+    failed = False
+
+    def fail_duration_settlement_once(
+        reservation: BudgetReservation,
+        settlement: BudgetSettlement,
+        usage_records: tuple[UsageRecord, ...],
+    ) -> bool:
+        nonlocal failed
+        if reservation.metric is BudgetMetric.TOTAL_DURATION and not failed:
+            failed = True
+            raise StorageOperationError("simulated validation settlement interruption")
+        return settle_reservation(reservation, settlement, usage_records)
+
+    monkeypatch.setattr(repository, "settle_reservation", fail_duration_settlement_once)
+    with pytest.raises(StorageOperationError, match="validation settlement interruption"):
+        service.execute(request)
+    assert len(commands.requests) == 1
+    assert any(
+        record.stage is OrchestrationRecordStage.OUTCOME
+        and isinstance(record.attempt, ValidationAttempt)
+        for record in repository.list_orchestration_records(RUN_ID)
+    )
+
+    reopened = SQLiteRunRepository(tmp_path / "state.db")
+    resumed_service = OrchestrationService(
+        runs=reopened,
+        journal=reopened,
+        git=git,
+        adapters=OrchestrationAdapters(
+            builder=builder,
+            reviewer=reviewer,
+            local_repair=local,
+            codex_repair=codex,
+        ),
+        validation=ValidationRunner(commands),
+        review_gate=ReviewGate(),
+        local_evidence=EvidenceCollector(),
+        context_selector=ContextSelector(),
+        telemetry=TelemetryService(reopened),
+        clock=DeterministicClock(),
+    )
+    request_data = request.model_dump(mode="python")
+    request_data["expected_revision"] = reopened.get_run(RUN_ID).revision
+
+    resumed = resumed_service.execute(OrchestrationRequest.model_validate(request_data))
+
+    assert resumed.status is OrchestrationStatus.APPROVED
+    assert len(commands.requests) == 1
+    assert (
+        len(
+            [
+                item
+                for item in reopened.list_usage_records(RUN_ID)
+                if item.metric is UsageMetric.VALIDATION_DURATION
+            ]
+        )
+        == 1
+    )
+
+
+def test_ambiguous_agent_launch_becomes_unresolved_and_survives_reopen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, request, _repository, git, builder, reviewer, local, codex, commands = _harness(
+        tmp_path,
+        validation_statuses=(CommandStatus.SUCCESS,),
+        review_results=(_approved_review(),),
+    )
+    invoke = builder.invoke
+
+    def lose_outcome_after_invoke(
+        agent_request: AgentRequest,
+        *,
+        cancellation: CancellationToken | None = None,
+    ) -> AgentResponse:
+        invoke(agent_request, cancellation=cancellation)
+        raise RuntimeError("simulated crash after possible provider execution")
+
+    monkeypatch.setattr(builder, "invoke", lose_outcome_after_invoke)
+    with pytest.raises(RuntimeError, match="possible provider execution"):
+        service.execute(request)
+    assert builder.invocation_count == 1
+    monkeypatch.setattr(builder, "invoke", invoke)
+
+    reopened = SQLiteRunRepository(tmp_path / "state.db")
+    resumed_service = OrchestrationService(
+        runs=reopened,
+        journal=reopened,
+        git=git,
+        adapters=OrchestrationAdapters(
+            builder=builder,
+            reviewer=reviewer,
+            local_repair=local,
+            codex_repair=codex,
+        ),
+        validation=ValidationRunner(commands),
+        review_gate=ReviewGate(),
+        local_evidence=EvidenceCollector(),
+        context_selector=ContextSelector(),
+        telemetry=TelemetryService(reopened),
+        clock=DeterministicClock(),
+    )
+    request_data = request.model_dump(mode="python")
+    request_data["expected_revision"] = reopened.get_run(RUN_ID).revision
+    resumed_request = OrchestrationRequest.model_validate(request_data)
+
+    stale_data = request.model_dump(mode="python")
+    stale_data["expected_revision"] = reopened.get_run(RUN_ID).revision + 1
+    stale = resumed_service.execute(OrchestrationRequest.model_validate(stale_data))
+    assert stale.status is OrchestrationStatus.STALE
+    assert any(
+        item.status is ReservationStatus.ACTIVE for item in reopened.list_reservations(RUN_ID)
+    )
+
+    blocked = resumed_service.execute(resumed_request)
+
+    assert blocked.status is OrchestrationStatus.BLOCKED
+    assert builder.invocation_count == 1
+    assert any(
+        item.metric is BudgetMetric.BUILD_ATTEMPTS and item.status is ReservationStatus.UNRESOLVED
+        for item in reopened.list_reservations(RUN_ID)
+    )
+    assert not any(
+        item.metric is UsageMetric.BUILD_ATTEMPTS for item in reopened.list_usage_records(RUN_ID)
+    )
+
+    reopened_again = SQLiteRunRepository(tmp_path / "state.db")
+    terminal_data = request.model_dump(mode="python")
+    terminal_data["expected_revision"] = reopened_again.get_run(RUN_ID).revision
+    terminal = resumed_service.execute(OrchestrationRequest.model_validate(terminal_data))
+    assert terminal.status is OrchestrationStatus.BLOCKED
+    assert any(
+        item.status is ReservationStatus.UNRESOLVED
+        for item in reopened_again.list_reservations(RUN_ID)
+    )
+
+
+@pytest.mark.parametrize(
+    ("budget_update", "reason_code"),
+    [
+        ({"max_remote_tokens": 10_000}, "remote_token_ceiling_unavailable"),
+        ({"max_estimated_cost_usd": Decimal("1.00")}, "estimated_cost_ceiling_unavailable"),
+    ],
+)
+def test_hard_external_budget_without_finite_invocation_ceiling_blocks_prelaunch(
+    tmp_path: Path,
+    budget_update: dict[str, object],
+    reason_code: str,
+) -> None:
+    run_data = _run().model_dump(mode="python")
+    budget_data = run_data["budgets"]
+    assert isinstance(budget_data, dict)
+    budget_data.update(budget_update)
+    run_data["budgets"] = budget_data
+    service, request, repository, _, builder, reviewer, local, _, commands = _harness(
+        tmp_path,
+        validation_statuses=(CommandStatus.SUCCESS,),
+        review_results=(_approved_review(),),
+        run=Run.model_validate(run_data),
+    )
+
+    result = service.execute(request)
+
+    assert result.status is OrchestrationStatus.BLOCKED
+    assert builder.invocation_count == reviewer.invocation_count == local.invocation_count == 0
+    assert commands.requests == []
+    assert repository.list_reservations(RUN_ID) == ()
+    assert not any(
+        item.metric
+        in {
+            UsageMetric.BUILD_ATTEMPTS,
+            UsageMetric.TOTAL_TOKENS,
+            UsageMetric.ESTIMATED_COST,
+        }
+        for item in repository.list_usage_records(RUN_ID)
+    )
+    build_outcome = next(
+        record.attempt
+        for record in result.records
+        if record.stage is OrchestrationRecordStage.OUTCOME
+        and record.attempt.kind is OrchestrationStep.BUILD
+    )
+    assert build_outcome.status.value == "BLOCKED"
+    assert build_outcome.failure is not None
+    assert build_outcome.failure.message == reason_code

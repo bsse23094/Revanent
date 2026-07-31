@@ -10,11 +10,13 @@ def test_migration_history_is_inspectable_ordered_and_versioned() -> None:
     assert [(migration.version, migration.name) for migration in MIGRATIONS] == [
         (1, "initial_run_state_and_events"),
         (2, "append_only_orchestration_journal"),
+        (3, "context_manifest_orchestration_evidence"),
+        (4, "append_only_usage_and_budget_reservations"),
     ]
     assert all(migration.statements for migration in MIGRATIONS)
 
 
-def test_schema_version_2_contract_has_required_objects_and_constraints(tmp_path: Path) -> None:
+def test_schema_version_4_contract_has_required_objects_and_constraints(tmp_path: Path) -> None:
     path = tmp_path / "contract.db"
     SQLiteRunRepository(path).initialize()
 
@@ -28,7 +30,9 @@ def test_schema_version_2_contract_has_required_objects_and_constraints(tmp_path
                     'idx_run_events_run_time',
                     'trg_run_events_no_update', 'trg_run_events_no_delete',
                     'orchestration_records', 'idx_orchestration_run_attempt',
-                    'trg_orchestration_no_update', 'trg_orchestration_no_delete'
+                    'trg_orchestration_no_update', 'trg_orchestration_no_delete',
+                    'usage_records', 'budget_reservations', 'budget_settlements',
+                    'idx_usage_records_run', 'idx_budget_reservations_run'
                 )
                 """
             ).fetchall()
@@ -44,6 +48,9 @@ def test_schema_version_2_contract_has_required_objects_and_constraints(tmp_path
         run_sql = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs'"
         ).fetchone()
+        orchestration_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'orchestration_records'"
+        ).fetchone()
 
     assert objects == {
         "schema_migrations": "table",
@@ -56,6 +63,11 @@ def test_schema_version_2_contract_has_required_objects_and_constraints(tmp_path
         "idx_orchestration_run_attempt": "index",
         "trg_orchestration_no_update": "trigger",
         "trg_orchestration_no_delete": "trigger",
+        "usage_records": "table",
+        "budget_reservations": "table",
+        "budget_settlements": "table",
+        "idx_usage_records_run": "index",
+        "idx_budget_reservations_run": "index",
     }
     assert run_columns == {
         "run_id",
@@ -85,3 +97,5 @@ def test_schema_version_2_contract_has_required_objects_and_constraints(tmp_path
     assert orchestration_foreign_keys[0][2:5] == ("runs", "run_id", "run_id")
     assert run_sql is not None
     assert "json_valid(run_payload_json)" in run_sql[0]
+    assert orchestration_sql is not None
+    assert "'CONTEXT'" in orchestration_sql[0]

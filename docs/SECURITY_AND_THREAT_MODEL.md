@@ -154,6 +154,39 @@ violation, invalid evidence, exhausted limits, cancellation, or unresolved side 
 forbid repair. Reviewer read-only authority remains separate, and only `ReviewGate` can
 construct approval evidence. Architecture and crash-window tests enforce these boundaries.
 
+P5-001 makes context construction a separate provider-neutral trust boundary. Typed local
+evidence is the only discovery input; repository or provider text cannot add candidates,
+change scope, raise trust, authorize writes/network/publication, suppress validation, or mark
+approval. Forbidden TaskSpecification scope wins over required/preferred/optional reasons.
+Repository-relative spelling plus resolved structural containment rejects traversal,
+absolute/UNC/sibling roots, `.git` and generated/dependency/cache directories, and symlink or
+Windows junction escapes. Approved artifacts additionally require typed root, run/package/
+correlation, type, completeness, size, redaction, and optional digest agreement.
+
+All content reads use one bounded reader with regular-file checks and before/opened/after
+metadata comparison. File changes receive only a small configured retry count; required race
+evidence blocks. Redaction precedes retention and digesting. Configured values, authorization
+headers, credential assignments, and token URL parameters are replaced; `.env`, common cloud
+credential paths, private-key files, and PEM/private-key blocks are refused. Manifests contain
+metadata and safe post-redaction digests only, while bodies remain bounded in memory and enter
+the existing typed AgentRequest context field. SQLite persists context intent and manifest
+evidence, never selected bodies.
+
+P5-002 treats usage and limits as local authority. Repository content, provider prose, and
+provider output cannot change budgets or provenance. Atomic SQLite reservation includes
+settled usage and active reservations before launch; settlement appends usage and lifecycle
+evidence in one transaction. Stale revisions write nothing. Unknown metrics remain
+`UNAVAILABLE`, never numeric zero, while ambiguous execution retains an `UNRESOLVED`
+reservation without automatic replay, release, or time expiry.
+
+Telemetry persistence is metadata-only: bounded identities, metric values/units, provenance,
+provider/model identifiers, correlations, timestamps, stable reason codes, and reservation
+lifecycle. Contracts have no prompt, context-body, source, raw provider/command output,
+credential, authorization-header, environment-value, home-path, or host-metadata fields.
+Provider-reported tokens cannot be relabelled after persistence. Decimal estimates require
+currency and estimator identity and are never called actual, billed, or charged cost. There
+is no network pricing lookup or bundled current rate table.
+
 ## Residual risks
 
 The intent-before-launch protocol cannot distinguish a crash immediately before process
@@ -163,12 +196,15 @@ execution. An operator-facing recovery decision and resume workflow remain P6-00
 revision guards stop cooperative coordinators but are not a distributed lock against a
 malicious same-user process. The small interval between the final state/worktree check and
 external launch remains a check/use race; stable evidence explains it but cannot remove it.
+SQLite `BEGIN IMMEDIATE` serializes supported local writers; it is not distributed
+coordination. Provider hard stopping cannot be guaranteed when a CLI lacks a finite token or
+cost ceiling, so a configured hard external budget fails closed before invocation.
 
 The production `LocalEvidenceCollector` wiring is not part of P4-002; future CLI
 composition must construct a reviewed collector for scope, generated/lock files, artifacts,
 cleanliness, read-only identity, and reconciliation facts. The library contract and gate
 fail closed, but unsafe caller-supplied local evidence would violate the construction
-boundary. P5/P6 must not infer those facts from provider prose.
+boundary. Later composition must not infer those facts from provider prose or telemetry.
 
 Command artifact verification is not cryptographic and remains subject to replacement
 after inspection by another same-user process. Review read-only flags reduce authority
@@ -195,6 +231,12 @@ minimal context/environment selection. Relative agent artifact references do not
 that a file exists or is safely stored; a future artifact store must authorize the
 root, write redacted bytes, and verify integrity. In-memory fake replay does not
 reconcile durable side effects or concurrent processes.
+
+Context redaction likewise cannot detect every encoded, fragmented, encrypted, transformed,
+or unknown secret. File metadata checks do not provide snapshot isolation and cannot prevent
+a same-user replacement after the final check. SHA-256 fields provide integrity correlation,
+not signatures or actor authentication. Python-only import discovery and exact-name test
+mapping can omit custom relationships, which must be supplied as explicit typed evidence.
 
 Git and filesystem identity have no cryptographic repository UUID. A malicious process
 with the same host-user authority can rewrite both owned records and matching Git
