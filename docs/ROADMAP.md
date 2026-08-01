@@ -68,4 +68,9 @@ evidence before its status changes to `IN_PROGRESS`.
 
 P5-001 deterministic context selection/manifests and P5-002 usage telemetry/budget enforcement
 are complete. Phase 5 closed on 2026-07-31 with SQLite schema 4, ADR-0011, real local
-concurrency/adversarial coverage, and no live model call. P6-001 is next.
+concurrency/adversarial coverage, and no live model call. P6-001 is complete: safe init,
+configuration validation, doctor, and provider-detection UX are implemented with ADR-0012.
+Phase 6 is COMPLETE. P6-002-C1 runtime command UX, immutable repository/worktree binding,
+recovery/status/cancellation semantics, real-SQLite races, and fake-first E2E are complete, as are
+P6-002-C2 schema-v1 read-only evidence reports, canonical JSON/Markdown rendering, safe no-clobber
+artifacts, and report CLI coverage. P7-001 live integration and cross-platform hardening is next.

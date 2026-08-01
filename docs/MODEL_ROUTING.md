@@ -21,3 +21,8 @@ Multi-agent/ultra execution is reserved for independently reviewable tracks such
 release, implementation, and security audits; it is not the ordinary coding default.
 Every work-package handoff states model, effort, local-builder scope, reviewer scope,
 expected risk, and an exact continuation prompt.
+
+Live certification never infers a model from executable presence or credentials. Each role requires
+its own explicit model option. OpenCode cannot be silently replaced by Codex as builder, and Codex
+review authorization does not authorize repair. C1 attempted `gpt-5.6-sol` only under separate
+one-call reviewer and repair authorizations; neither response reached certification success.

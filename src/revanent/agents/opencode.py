@@ -152,7 +152,11 @@ class OpenCodeBuilderAdapter:
                 request, identity=identity, failure=failure, status=status
             )
         try:
-            prompt = deterministic_prompt(request, mode="builder-repository-write")
+            prompt = deterministic_prompt(
+                request,
+                mode="builder-repository-write",
+                identity=identity,
+            )
         except ValueError:
             return prelaunch_failure_response(
                 request,

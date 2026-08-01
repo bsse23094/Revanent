@@ -62,3 +62,38 @@ table, setting either hard external limit currently fails closed before agent in
 consumes no attempt. No pricing is embedded or fetched, and repository/provider data cannot
 override these values. Duration and role-attempt limits continue to come from the immutable
 durable `Run` budget snapshot. P6-001 must preserve these semantics when wiring configuration.
+
+## P6-001 discovery, validation, and initialization
+
+The accepted project configuration filename is exactly `revanent.yaml` at the discovered target
+repository root. `revanent config validate --repository PATH` does not search arbitrary parent
+directories and an explicit `--config` may name only that root-level file. The loader rejects
+links/junctions, special files, files above 256 KiB, malformed YAML, unsupported schema versions,
+unknown keys, and validation errors without echoing input values.
+
+P6-001 freezes the precedence order: immutable schema defaults, project YAML, explicitly
+declared schema secret references, then typed allowlisted CLI overrides. Schema version 1 declares
+no secret-reference field, so no environment value is read into effective configuration. Arbitrary
+environment overlays are unsupported. The sole current override is
+`config validate --max-total-minutes`; it is validated through the complete schema and cannot
+change provider, path, network, Git publication, command, or approval policy.
+
+Workspace, report, and Revanent state roots resolve from the target repository root regardless
+of the caller CWD. They must be distinct, repository-relative, and free of absolute paths,
+parent traversal, `.git` components, symlink/junction escapes, and sibling-prefix ambiguity.
+The default schema-v1 template is constructed and validated by production code, not copied from
+an unvalidated CLI string.
+
+P6-002 report output uses the configured report root only when `revanent report --output` is
+explicit. The output name remains relative to that root; it does not authorize absolute paths,
+overwrites, or any configured path escape.
+
+Live workflow execution is default-off. `policy.allow_network`,
+`policy.allow_live_opencode_builder`, and `policy.allow_live_codex_reviewer` must all be explicitly
+true before runtime composition authorizes provider stdin. `policy.allow_codex_write_repair` is a
+separate additional repair-role decision; reviewer authorization never grants write access.
+
+`revanent init` writes that canonical template only to an absent root-level `revanent.yaml`.
+It reuses an identical file without rewriting it and refuses a differing or unsafe existing file.
+It creates only `.revanent/worktrees`, `.revanent/runs`, and `.revanent/state`, after confirming
+the `.revanent` root is already ignored. It never changes `.gitignore`.

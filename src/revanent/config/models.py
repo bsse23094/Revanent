@@ -107,6 +107,8 @@ class PolicyConfig(_ConfigModel):
     allowed_paths: tuple[RelativePath, ...]
     forbidden_paths: tuple[RelativePath, ...] = (".git/**", ".env")
     allow_codex_write_repair: bool = False
+    allow_live_opencode_builder: bool = False
+    allow_live_codex_reviewer: bool = False
     allow_network: bool = False
     allow_push: Literal[False] = False
     allow_merge: Literal[False] = False
@@ -173,6 +175,6 @@ class RevanentConfig(_ConfigModel):
         if workspace == reports:
             raise ValueError("workspace root and reporting directory must be distinct")
         for label, path in (("workspace root", workspace), ("reporting directory", reports)):
-            if path.parts and path.parts[0].casefold() == ".git":
+            if any(part.casefold() == ".git" for part in path.parts):
                 raise ValueError(f"{label} cannot be located under .git")
         return self

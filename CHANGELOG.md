@@ -7,6 +7,33 @@ and will adopt Semantic Versioning when its first release is cut.
 
 ### Added
 
+- Began P7-001-C1 with default-off, role-scoped, finite live certification contracts and pytest
+  markers/options; disposable source/owned-worktree scenarios; separate OpenCode builder, Codex
+  reviewer, and Codex repair authorization; and metadata-only certificate contracts.
+- Hardened runtime composition so provider stdin is enabled only after explicit network, builder,
+  and reviewer authorization. Live prompts now include trusted adapter identity and the exact
+  response schema; Codex JSONL accepts bounded interim messages and selects the final message.
+
+- Completed P6-002-C2 and Phase 6: strict immutable schema-v1 evidence reports, read-only durable
+  assembly shared with status facts, canonical JSON, deterministic escaped Markdown, reproduction/
+  limitation evidence, typed report outcomes, and `revanent report`.
+- Explicit report artifacts are report-root-relative, bounded, SHA-256-labelled integrity metadata
+  (not signatures), atomic/no-clobber, and idempotently reuse identical bytes. ADR-0013 records the
+  design; no report body is stored in SQLite and no migration was added.
+
+- Completed P6-002-C1 typed `run`, `resume`, read-only `status`, and idempotent `cancel` workflows;
+  SQLite migration 5 atomically persists immutable Run/repository/worktree bindings before every
+  side effect; full typed identity and live owned-worktree checks fail closed before recovery.
+- Versioned provider-neutral status projects bounded event/attempt/context/validation/review/usage/
+  budget/cancellation/artifact evidence, detects contradictions as `INVALID_EVIDENCE`, and performs
+  no reconciliation, settlement, transition, provider probe, or write.
+- Bounded task JSON safety, provider-before-persistence validation, restart no-replay recovery,
+  real-SQLite resume/resume and resume/cancel races, stable exits/output, and fake/local-only CLI
+  E2E coverage. Report artifacts and cleanup remain absent for P6-002-C2.
+- P6-001 safe `init`, root-bound `config validate`, read-only typed `doctor`, and P3-backed
+  `agents detect` CLI workflows; no-clobber initialization plans, deterministic exit codes,
+  filtered environment/provider probes, ADR-0012, and temporary-repository safety coverage.
+
 - Phase 0 project charter, requirements, architecture, roadmap, ADRs, and work packages.
 - Python package, Typer CLI, read-only environment doctor, CI, and foundation tests.
 - P1-001 immutable versioned configuration/domain schemas, centralized run-state

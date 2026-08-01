@@ -1,11 +1,14 @@
 # Project State
 
-Last updated: 2026-07-31
+Last updated: 2026-08-01
 
 ## Current milestone
 
-Phase 5 is complete. P5-001 deterministic context selection/manifests and P5-002 usage
-telemetry/budget enforcement are complete. Phase 6 is next.
+Phase 6 is COMPLETE. P7-001 is IN PROGRESS with C1 partial. P5-001 deterministic context
+selection/manifests, P5-002 usage
+telemetry/budget enforcement, P6-001 setup/configuration/inspection UX, and P6-002-C1 runtime
+command UX and C2 read-only evidence reports are complete. OpenCode availability and strict Codex
+response compatibility block live C1 completion.
 
 ## Completed work packages
 
@@ -20,10 +23,152 @@ telemetry/budget enforcement are complete. Phase 6 is next.
 - P4-002 - Bounded Orchestration and Explicit Repair Policy (COMPLETE 2026-07-31).
 - P5-001 - Deterministic Context Selection and Manifest (COMPLETE 2026-07-31).
 - P5-002 - Usage Telemetry and Budget Enforcement (COMPLETE 2026-07-31).
+- P6-001 - Configuration, Initialization, Doctor, and Provider-Detection UX (COMPLETE 2026-08-01).
+- P6-002 - Run, Resume, Status, Report CLI and Evidence Reports (COMPLETE 2026-08-01).
 
 ## Active work package
 
-P6-001 - Configuration, Initialization, Doctor, and Provider-Detection UX.
+P7-001 - Live Integration and Cross-Platform Hardening.
+
+## P7-001-C1 partial delivery
+
+- Added schema-v1 role-scoped finite live authorization/evidence contracts, default-excluded live
+  markers, explicit per-role pytest options, disposable source/owned-worktree scenarios, and
+  metadata-only certification output.
+- Production runtime now requires network plus separate OpenCode-builder and Codex-reviewer flags;
+  Codex repair write authority remains independent. Provider stdin is enabled only after those
+  authorizations pass.
+- OpenCode detection is honestly unavailable. One Codex reviewer call exposed multi-message JSONL
+  framing and one repair call returned a strict-schema-invalid envelope; neither was certified as
+  successful. No full live orchestration, telemetry/report, or approval certification is claimed.
+- P7-001 and Phase 7 remain IN PROGRESS. P7-001-C2 is next after provider prerequisites and response
+  compatibility are resolved.
+- C1 verification: 44 focused offline tests pass; categorized and full offline suites each pass 684
+  with two expected Windows skips and three live tests default-deselected. OpenCode made zero provider
+  calls; one Codex reviewer and one Codex repair call were attempted and safely rejected.
+
+## P6-002-C1 delivered
+
+- Presentation-only `run`, `resume`, read-only `status`, and idempotent `cancel` commands adapt
+  typed application services. Missing required providers fail before persistence or launch; valid
+  Run creation atomically commits the revision-zero Run and immutable schema-v1 repository/worktree
+  binding, reloads both, and only then enters the coordinator.
+- SQLite migration 5 adds the one-to-one immutable runtime binding. Full typed repository identity
+  is rediscovered for every operation. Once workspace evidence exists, active ownership and live
+  repository/path/branch/worktree-ID/run correlations are mandatory. Mismatch blocks before
+  reconciliation and never falls back to the source worktree or performs cleanup.
+- Resume calls existing orchestration reconciliation before continuation, reuses completed context,
+  workspace, agent, validation, and telemetry evidence, settles trusted outcomes idempotently, and
+  never replays ambiguous mutating initiation. Terminal and duplicate calls are stable; stale and
+  concurrent losers launch nothing.
+- Schema-v1 status projects safe identity, workflow/latest-event/per-role attempt activity, context
+  manifest bytes, validation totals, review/findings/ApprovalGate, provenance-separated usage,
+  currency-separated budgets, reservations, cancellation/ambiguity, safe artifact references,
+  reason/contradiction codes, and completeness. It performs no provider probe, reconciliation,
+  settlement, transition, repair, or write; contradictory evidence is `INVALID_EVIDENCE`.
+- Cancel transitions only through the coordinator, honors expected revision, is idempotent, and
+  preserves worktrees, attempts, artifacts, active/unresolved reservations, and ambiguity without
+  claiming that an external process was killed.
+- Task input is strict bounded repository-relative regular UTF-8 JSON. Absolute/traversal/link/
+  junction/reparse/special/oversized/racy/malformed/unknown/unsupported input is refused with a
+  generic secret-safe diagnostic. Task/repository/provider prose grants no authority.
+- Fake/local-only E2E and real-SQLite barrier coverage prove durable-before-launch ordering,
+  read-only status equivalence, invalid evidence, repository/worktree no-write refusal,
+  resume/resume and resume/cancel single-side-effect ownership, repeated/stale cancellation,
+  paths with spaces/Unicode, caller-CWD independence, and no live provider/network use.
+- Reports and cleanup remain absent. Production local approval is deliberately conservative and
+  cannot fabricate `APPROVED`. P6-002-C2 is next; P6-002 and Phase 6 remain IN PROGRESS.
+
+## P6-002-C1 verified commands
+
+- `uv sync --dev` — exit 0; 27 packages resolved and audited.
+- `uv run ruff format --check .` — exit 0; 174 files already formatted.
+- `uv run ruff check .` — exit 0; all checks passed.
+- `uv run mypy src tests` — exit 0; no issues in 126 source/test files.
+- Focused runtime/resume/status/cancel/CLI/storage/concurrency paths — exit 0; 103 passed and
+  one host-permission symlink skip in 21.78 seconds.
+- `uv run pytest tests/unit tests/contract tests/integration tests/e2e` — exit 0; 665 passed and
+  two expected Windows skips in 189.87 seconds.
+- Final `uv run pytest` — exit 0; 665 passed and two expected Windows skips in 189.77 seconds on
+  Windows AMD64, CPython 3.12.11.
+- `uv run revanent doctor` — exit 0; Python 3.12.11, Windows AMD64, uv 0.7.13, Git
+  2.54.0.windows.1, OpenCode accurately unavailable, and installed Codex
+  `0.146.0-alpha.9.2` detected through version/help inspection only.
+- `git diff --check` and focused architecture/security scans — exit 0; expected LF-to-CRLF notices
+  only. No CLI SQLite/subprocess/raw-Git/provider parsing, status mutation, report/cleanup command,
+  live model/network call, destructive Git action, commit, push, merge, or publication occurred.
+- Skips: Win32 filenames cannot contain newline/tab characters; the current host does not permit
+  creating a file symlink. Both safety paths have structural Windows/reparse coverage elsewhere.
+
+## P6-002-C2 delivered
+
+- Strict immutable schema-v1 report contracts and a read-only report service derive bounded safe
+  evidence from the canonical status projection plus Run, binding, attempts, manifests, validation,
+  review/ApprovalGate, telemetry/reservations, and artifact metadata. They never reconcile, settle,
+  transition, invoke providers or validation, mutate Git/worktrees, or repair storage.
+- Canonical UTF-8 JSON is the authoritative projection; Markdown is a deterministic escaped pure
+  rendering. Approved reports independently require valid ApprovalGate, passing complete validation,
+  approvable review, no unresolved high/critical findings, no active ambiguity/reservations, and no
+  contradictions. Active/incomplete evidence is explicit, and invalid evidence cannot claim approval.
+- `revanent report RUN_ID --repository PATH [--format json|markdown] [--output PATH] [--json]`
+  loads evidence read-only. Output is optional; the report-root writer rejects absolute/traversal,
+  `.git`, link/reparse, special, and differing collision paths, fsyncs a private temporary file, and
+  finalizes through create-exclusive linking. Identical content is reused. SHA-256 is integrity
+  metadata, never a signature. SQLite stores no report body and migration 5 remains current.
+- ADR-0013 records canonical-report ownership, privacy/size boundaries, no-clobber artifacts, and
+  rejected alternatives. All report verification is fake/local-only; no live provider, network,
+  Git mutation, cleanup, commit, or publication occurred.
+
+## P6-001 delivered
+
+## P6-002-C2 verified commands
+
+- `uv sync --dev` exited 0; 27 packages resolved and audited.
+- Ruff format/lint and mypy exited 0 (183 files formatted; 134 typed source/test files).
+- Focused report paths exited 0: 17 passed.
+- Categorized and final full suites each exited 0: 677 passed, 2 expected Windows skips.
+- `uv run revanent doctor` exited 0 on Windows AMD64 / CPython 3.12.11; OpenCode is accurately
+  unavailable and Codex was detected through version/help inspection only.
+- `git diff --check` exited 0 with only expected LF-to-CRLF working-tree notices. No live provider,
+  network, Git mutation, cleanup, commit, push, merge, or publication occurred.
+
+## P6-001 delivered
+
+- Typed P6 application services keep Typer presentation separate from configuration, safe
+  initialization, runtime diagnostics, provider capability inspection, controlled process use,
+  and Git inspection.
+- `init` plans before applying only no-clobber create/reuse actions for root `revanent.yaml` and
+  `.revanent/worktrees`, `.revanent/runs`, and `.revanent/state`. It refuses dirty/bare/non-Git,
+  unignored, linked/junctioned, colliding, special, or differing user-owned paths and never edits
+  `.gitignore`, Git configuration, branches, commits, worktrees, run state, or providers.
+- `config validate` uses bounded safe schema-v1 YAML at the target repository root. Precedence is
+  defaults, project YAML, schema-declared secret references (none in v1), then the sole typed
+  `--max-total-minutes` override. Arbitrary environment overlays do not exist.
+- `doctor` is stable/read-only with PASS, FAIL, WARNING, UNAVAILABLE, SKIPPED, and BLOCKED checks;
+  optional OpenCode absence succeeds by default and strict provider gaps fail deterministically.
+- `agents detect` projects existing P3 version/help inspection into bounded OpenCode builder and
+  separate Codex review/repair capability results. No model request, credentials, or network call
+  occurs. ADR-0012 records the policy.
+
+## P6-001 verified commands
+
+- Pre-edit canonical baseline — exit 0; 619 passed and one expected Windows filename skip in
+  182.49 seconds.
+- `uv sync --dev` — exit 0; 27 packages resolved and audited.
+- `uv run ruff format --check .` — exit 0; 168 files already formatted.
+- `uv run ruff check .` — exit 0; all checks passed.
+- `uv run mypy src tests` — exit 0; no issues in 120 source/test files.
+- Focused P6 unit/contract/integration suite — exit 0; 42 passed in 13.64 seconds.
+- `uv run pytest tests/unit tests/contract tests/integration tests/e2e` — exit 0; 640 passed
+  and one expected Windows filename skip in 178.46 seconds.
+- Final `uv run pytest` — exit 0; 640 passed and one expected Windows filename skip in
+  179.58 seconds on Windows AMD64, CPython 3.12.11.
+- `uv run revanent doctor` — exit 0; Python 3.12.11, Windows AMD64, uv 0.7.13, Git
+  2.54.0.windows.1, OpenCode accurately unavailable, and Codex review/repair capability
+  surfaces available through safe version/help detection only.
+- `git diff --check` and focused architecture/security scans — exit 0; only expected
+  LF-to-CRLF working-tree notices, no direct subprocess/Git/provider/network bypass, no
+  overwrite/force path, no `.gitignore` editing, and no P6-002 command implementation.
 
 ## P5-002 delivered
 
@@ -350,10 +495,12 @@ fake-executable integration; installed Codex evidence is version/help-only detec
 
 ## Known limitations
 
-Orchestration and telemetry remain library services; P6 owns user-facing initialization,
-configuration, provider detection, run/resume/status/report commands, and safe production
-wiring. The supplied `LocalEvidenceCollector` remains a construction-time port, and P6 must
-wire a reviewed production collector. Agent artifacts have no general run artifact store.
+Orchestration and telemetry remain application-composed library services. P6-001 owns safe
+initialization, configuration validation, provider detection, and read-only diagnostics;
+P6-002-C1 owns run/resume/status/cancel production wiring. Its local approval collector is
+deliberately conservative (`scope_justified=False`), so production cannot fabricate approval;
+a later reviewed evidence collector may reduce false blockers without trusting provider prose.
+P6-002-C2 still owns report commands/artifacts. Agent artifacts have no general run artifact store.
 
 Provider usage depends on validated structured reporting; missing token metrics remain
 numeric-free `UNAVAILABLE`. No current pricing service exists, so estimated cost is likewise
@@ -397,8 +544,9 @@ scope until later packages.
 
 ## Blockers
 
-None. OpenCode remains unavailable locally but is an accurately typed optional capability
-state, not a blocker to P6-001 configuration and provider-detection work.
+None for fake/local C1 or C2 report work. OpenCode remains unavailable locally; doctor reports it
+as optional by default, while production `run`/`resume` correctly require its configured builder
+capability and exit before persistence or launch. No live-provider certification is claimed.
 
 ## Architectural decisions
 
@@ -420,16 +568,17 @@ state, not a blocker to P6-001 configuration and provider-detection work.
   metadata-only manifests, AgentRequest projection, and durable CONTEXT_PREPARING evidence.
 - ADR-0011: Durable metadata-only usage telemetry, exact provenance and units, atomic
   reservation/settlement, conservative recovery, and fail-closed budget enforcement.
+- ADR-0012: Typed CLI/application setup separation, root-bound configuration, no-clobber
+  initialization, read-only diagnostics, provider capability detection, and exit-code policy.
 
 ## Next recommended work package
 
-P6-001 - Configuration, Initialization, Doctor, and Provider-Detection UX.
+P7-001 - Live Integration and Cross-Platform Hardening.
 
 ## Exact next-session bootstrap instruction
 
-Continue Revanent from the completed and verified Phase 5/P5-002 baseline. Implement P6-001
-Configuration, Initialization, Doctor, and Provider-Detection UX. Preserve the strict typed
-boundaries, metadata-only telemetry, local-first safety, non-overwrite behavior, and cumulative
-dirty worktree. Add idempotent initialization, validated configuration precedence, actionable
-doctor/provider detection, CLI tests and authoritative documentation, then run every canonical
-gate. Do not call live providers/network or mutate/publish Git history.
+Continue Revanent from the completed and verified P6-002-C1 baseline. Implement P6-002-C2 —
+immutable bounded JSON and Markdown evidence reports, report CLI UX, reproduction evidence, final
+P6-002/Phase 6 audits, documentation, and canonical verification. Preserve C1 repository/worktree
+binding, read-only status, reconciliation/no-replay, cancellation, output-safety, and fake-first
+boundaries. Do not add cleanup, invoke live providers/network, or mutate/publish Git history.

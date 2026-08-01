@@ -154,7 +154,16 @@ maintained in `ROADMAP.md` and package completion evidence.
 | NFR-008 | P5-002 | Atomic reservation before launch, atomic settlement after outcome, exact integer/Decimal boundaries, overage denial, and real SQLite race coverage |
 | SEC-003/006/007/008 | P5-002 | Metadata-only persistence, no provenance laundering/bytes-to-token inference/provider-controlled limits, and adversarial privacy/concurrency tests |
 | OPS-001/002/005/007 | P5-002 | Durable usage lifecycle, restart settlement without replay, unresolved preservation, and SQLite migration 4 |
+| FR-011/012/013 | P6-002 | Typed `run`/reconciling `resume`/read-only `status`/idempotent `cancel`/read-only `report` CLI workflows, immutable bindings, strict JSON/Markdown report evidence, safe output, stable outcomes/exits, and fake-first E2E |
+| NFR-002/003/004/006 | P6-002-C1 | Provider-neutral versioned application/status contracts, deterministic evidence projection, explicit invalid-evidence and mismatch failures, and strict typed boundaries |
+| SEC-003/004/005/006/007/008 | P6-002-C1 | Bounded no-follow task input, full repository/live-owned-worktree checks, presentation-only CLI, safe output, no cleanup/publication, and fake/local-only adversarial tests |
+| OPS-001/002/004/005/007 | P6-002-C1 | Atomic Run/binding persistence before side effects, reconciliation/no replay, read-only contradiction-aware status, cancellation preservation, SQLite migration 5, and real-SQLite races |
+| FR-014 | P6-001 | P3 version/help capability projection with distinct OpenCode builder and Codex review/repair facts |
+| NFR-001/004/005/006 | P6-001 | Windows-safe typed local setup services, explicit exit outcomes, no hosted dependency, and strict CLI/application separation |
+| SEC-003/004/005/006/007 | P6-001 | Filtered environment, bounded root YAML, path/link/collision refusal, no-clobber init, no Git publication, and secret-safe diagnostics |
+| OPS-004/006 | P6-001 | Stable PASS/FAIL/WARNING/UNAVAILABLE/SKIPPED/BLOCKED diagnostics and validation before later invocation wiring |
 
-P4-002 now owns library-level repository/worktree verification and in-flight side-effect
-reconciliation. P6-002 remains responsible for the user-facing resume/status/report
-workflow and must call these boundaries rather than reimplementing them.
+P4-002 owns library-level repository/worktree verification and in-flight side-effect
+reconciliation. P6-002 calls those boundaries for user-facing resume/status/cancel without a
+second workflow engine. Its C2 report service remains read-only and derives report artifacts from
+the same canonical evidence; it never invokes reconciliation.

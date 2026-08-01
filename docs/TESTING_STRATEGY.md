@@ -62,6 +62,12 @@ The default suite makes no paid or live provider calls. P3-002 adds no live test
 future live OpenCode/Codex test must be explicitly opted in and marked; installed CLI
 presence alone can never enable it. Simulated results never count as live evidence.
 
+P7 implements `live`, `live_opencode`, `live_codex`, `network`, and `costed` markers. The default
+marker expression excludes live tests. Explicit live selection without the certification switch,
+acknowledgement, role-specific model, and finite ceilings fails before repository creation or a
+provider call. Each role test permits one call and runs serially in a fresh disposable repository and
+owned worktree. Offline contract tests freeze authorization separation and default-off stdin.
+
 P3-001 adds agent contract, parser, architecture, and fake-adapter tests. Contract tests
 freeze schema version 1 round trips, canonical JSON, immutability, IDs, UTC ordering,
 role/access invariants, status/failure/side-effect consistency, explicit reported usage,
@@ -144,7 +150,7 @@ aliases, trust-separated deduplication, and exact byte reduction.
 
 Integration uses temporary roots and the real context reader to prove current-platform
 symlink or Windows reparse-point junction escape refusal. E2E orchestration tests use the real
-selector, temporary SQLite schema 4, fake Git/agents, deterministic clocks, and scripted local
+selector, temporary current SQLite schema, fake Git/agents, deterministic clocks, and scripted local
 validation to prove CONTEXT_PREPARING intent/outcome durability, metadata-only persistence,
 successful context propagation, required-context provider refusal, stale/cancellation
 prelaunch behavior, and all prior P4 crash/repair/approval invariants. No live provider,
@@ -173,3 +179,46 @@ uv run pytest
 CI runs the gates on Windows and Linux with Python 3.12 and 3.13. Security-sensitive
 changes require negative tests at the relevant trust boundary. Tests assert actual
 behavior and avoid replacing the behavior under test with ceremonial mocks.
+
+## P6-001 setup and inspection coverage
+
+P6 adds unit, contract, CLI, and temporary-real-Git tests for canonical template validation,
+schema/path/size rejection, root-relative resolution, secret-safe errors, typed override
+precedence, plan purity, no-clobber creation, repeat init, differing-config refusal, dirty and
+unignored-root refusal, concurrent init, paths with spaces/Unicode, read-only config validation,
+doctor JSON/default/strict exit behavior, and P3-backed provider detection. Architecture tests
+prove the CLI has no concrete adapter/process/storage dependency. All test provider evidence is
+version/help-only or fake; no test performs a model call.
+
+## P6-002-C1 runtime coverage
+
+Runtime tests cover bounded strict task input, traversal/absolute/special/link refusal, hostile task
+prose remaining non-authoritative, and secret-safe errors. SQLite migration tests prove atomic
+Run/binding creation, immutability, correlation rollback, close/reopen validation, and no implicit
+repair. Repository/worktree mismatch tests prove status/resume/cancel block before orchestration and
+leave Run/event/attempt evidence unchanged.
+
+Status projection tests cover APPROVED, CREATED, and CANCELLED evidence; latest events and role
+attempts; context, validation, review, unavailable usage, budgets, cancellation, safe relative
+references, invalid revision/event evidence, canonical repeated output, and exact before/after
+Run/events/orchestration/usage/reservation equality. Architecture tests reject status mutation and
+require resume reconciliation before execution and cancellation delegation to the coordinator.
+
+Fake-first orchestration and runtime CLI E2E tests retain durable intent/outcome/reservation/
+settlement ordering, restart recovery without replay, unresolved ambiguity, terminal no-ops,
+repeated/stale cancellation, path spaces/Unicode/caller-CWD independence, and bounded output.
+Real-SQLite barrier tests cover concurrent resume/resume and resume/cancel with at most one worktree,
+builder, validator, reviewer, repair, reservation, and settlement boundary. Existing P4/P5 tests
+cover phase-specific interruption points and adversarial budget/reconciliation behavior. No runtime
+test invokes a live provider, network surface, destructive Git operation, report, or cleanup path.
+
+## P6-002-C2 report coverage
+
+Report tests validate schema-v1 strictness, unknown-field/version refusal, immutability, canonical
+JSON round-trip, deterministic escaped Markdown, no control/HTML injection, bounded output names,
+and no-clobber artifact digests. Fake local durable evidence covers APPROVED and active Run reports,
+status/shared-fact consistency, approval evidence, and exact before/after run/event/attempt/usage/
+reservation equality. Barrier writer tests cover concurrent identical reuse and conflicting writer
+refusal. CLI E2E covers help exposure, JSON output, format conflict, missing cleanup, Unicode paths,
+and typed exits. No P6 report test calls a provider, network, reconciliation, validator, or Git
+mutation.

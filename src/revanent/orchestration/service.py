@@ -363,6 +363,31 @@ class OrchestrationService:
             "non-mutating attempt has incomplete durable evidence",
         )
 
+    def cancel(
+        self,
+        request: OrchestrationRequest,
+    ) -> OrchestrationResult:
+        """Durably stop a run at its next safe boundary without cleaning evidence.
+
+        This narrow public operation intentionally lives beside ``execute`` so the
+        application layer never needs to import the state machine.  A revision
+        mismatch is a no-write stale result; terminal runs are stable no-ops.
+        """
+        if not isinstance(request, OrchestrationRequest):
+            raise TypeError("request must be a validated OrchestrationRequest")
+        stored = self._runs.get_run(request.run_id)
+        if stored.run.state.is_terminal:
+            return self._terminal_result(stored)
+        if request.expected_revision is not None and stored.revision != request.expected_revision:
+            return self._result(
+                stored,
+                OrchestrationStatus.STALE,
+                "persisted run revision differs from the caller expectation",
+            )
+        # Do not attempt recovery or release reservations on cancellation.  The
+        # terminal event preserves any ambiguity for explicit human recovery.
+        return self._cancel(stored)
+
     def _workspace(
         self, stored: StoredRun, request: OrchestrationRequest
     ) -> OrchestrationResult | None:
@@ -516,7 +541,7 @@ class OrchestrationService:
                         if selected.failure.blocking
                         else AttemptStatus.INVALID
                     ),
-                    completed_at=self._clock.now(),
+                    completed_at=max(self._clock.now(), intent.started_at),
                     failure=self._failure(
                         selected.failure.code,
                         "deterministic context selection did not complete safely",
@@ -533,7 +558,7 @@ class OrchestrationService:
             terminal = ContextAttempt(
                 **intent.model_dump(exclude={"status", "completed_at", "failure", "manifest"}),
                 status=AttemptStatus.COMPLETED,
-                completed_at=self._clock.now(),
+                completed_at=max(self._clock.now(), intent.started_at),
                 manifest=package.manifest,
             )
             persisted_outcome = self._persist(

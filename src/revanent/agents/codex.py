@@ -267,8 +267,8 @@ def parse_codex_jsonl(text: str) -> bytes:
             item_type = item["type"]
             if item_type == "agent_message" and event_type == "item.completed":
                 text_value = item.get("text")
-                if terminal_text is not None or not isinstance(text_value, str):
-                    raise ValueError("contradictory_terminal_events")
+                if not isinstance(text_value, str):
+                    raise ValueError("malformed_provider_event")
                 terminal_text = text_value
             elif item_type not in allowed_items:
                 raise ValueError("unknown_provider_event")
@@ -312,7 +312,7 @@ def _invoke_codex(
             request, identity=identity, failure=failure, status=status
         )
     try:
-        prompt = deterministic_prompt(request, mode=mode)
+        prompt = deterministic_prompt(request, mode=mode, identity=identity)
     except ValueError:
         return prelaunch_failure_response(
             request,

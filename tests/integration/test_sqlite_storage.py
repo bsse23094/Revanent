@@ -28,6 +28,8 @@ from revanent.domain import (
     WorkPackageStatus,
     transition_run,
 )
+from revanent.ports.git import RepositoryIdentity, WorktreeId
+from revanent.ports.runtime import RuntimeBinding
 from revanent.ports.storage import (
     ConcurrentRunUpdateError,
     CorruptStorageError,
@@ -38,6 +40,7 @@ from revanent.ports.storage import (
     PersistedModelVersionError,
     RunNotFoundError,
     StorageNotInitializedError,
+    StorageOperationError,
     StoragePathError,
     StoredRun,
     TransitionMismatchError,
@@ -76,6 +79,24 @@ def _run(seed: str = "0", *, state: RunState = RunState.CREATED) -> Run:
         state=state,
         created_at=NOW,
         updated_at=NOW,
+    )
+
+
+def _binding(run: Run, root: Path) -> RuntimeBinding:
+    return RuntimeBinding(
+        run_id=run.id,
+        repository=RepositoryIdentity(
+            repository_id="repo_" + "a" * 64,
+            worktree_root=root,
+            git_directory=root / ".git",
+            common_git_directory=root / ".git",
+            object_format="sha1",
+            root_commits=("1" * 40,),
+        ),
+        worktree_id=WorktreeId("wt_" + run.id.root.removeprefix("run_")),
+        worktree_relative_path=f".revanent/worktrees/{run.id.root}",
+        branch_name=f"revanent/P6-002-{run.id.root[-8:]}",
+        created_at=run.created_at,
     )
 
 
@@ -160,15 +181,47 @@ def test_fresh_and_repeated_initialization_records_schema_version_once(tmp_path:
 
     assert path.is_file()
     assert first == second
-    assert first.schema_version == 4
+    assert first.schema_version == 5
     assert first.migrations == (
         "initial_run_state_and_events",
         "append_only_orchestration_journal",
         "context_manifest_orchestration_evidence",
         "append_only_usage_and_budget_reservations",
+        "runtime_repository_bindings",
     )
     assert first.foreign_keys_enabled is True
     assert [tuple(row) for row in first_history] == [tuple(row) for row in second_history]
+
+
+def test_bound_run_creation_is_atomic_immutable_and_reopens(tmp_path: Path) -> None:
+    path = tmp_path / "bound.db"
+    root = tmp_path.resolve()
+    repository = SQLiteRunRepository(path)
+    repository.initialize()
+    run = _run("a")
+    binding = _binding(run, root)
+
+    assert repository.create_bound_run(run, binding) == StoredRun(run=run, revision=0)
+    reopened = SQLiteRunRepository(path)
+    assert reopened.get_runtime_binding(run.id) == binding
+
+    with _raw_connect(path) as connection, pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "UPDATE runtime_bindings SET repository_id = ? WHERE run_id = ?",
+            ("repo_" + "b" * 64, run.id.root),
+        )
+
+
+def test_bound_run_creation_rolls_back_when_binding_conflicts(tmp_path: Path) -> None:
+    repository = SQLiteRunRepository(tmp_path / "bound-conflict.db")
+    repository.initialize()
+    first = _run("a")
+    second = _run("b")
+
+    with pytest.raises(StorageOperationError):
+        repository.create_bound_run(second, _binding(first, tmp_path.resolve()))
+
+    assert repository.run_exists(second.id) is False
 
 
 def test_version_1_database_migrates_forward_without_changing_existing_runs(
@@ -180,6 +233,9 @@ def test_version_1_database_migrates_forward_without_changing_existing_runs(
     run = _run()
     repository.create_run(run)
     with _raw_connect(path) as connection:
+        connection.execute("DROP TRIGGER trg_runtime_bindings_no_delete")
+        connection.execute("DROP TRIGGER trg_runtime_bindings_no_update")
+        connection.execute("DROP TABLE runtime_bindings")
         for trigger in (
             "trg_usage_records_no_delete",
             "trg_usage_records_no_update",
@@ -202,8 +258,8 @@ def test_version_1_database_migrates_forward_without_changing_existing_runs(
 
     status = SQLiteRunRepository(path).initialize()
 
-    assert status.schema_version == 4
-    assert status.migrations[-1] == "append_only_usage_and_budget_reservations"
+    assert status.schema_version == 5
+    assert status.migrations[-1] == "runtime_repository_bindings"
     assert SQLiteRunRepository(path).get_run(run.id) == StoredRun(run=run, revision=0)
 
 
@@ -215,13 +271,13 @@ def test_newer_schema_version_is_rejected_without_modification(tmp_path: Path) -
         )
         connection.execute(
             "INSERT INTO schema_migrations VALUES (?, ?, ?)",
-            (5, "future", "2026-07-30T12:00:00Z"),
+            (6, "future", "2026-07-30T12:00:00Z"),
         )
 
     with pytest.raises(UnsupportedSchemaVersionError) as captured:
         SQLiteRunRepository(path).initialize()
 
-    assert captured.value.actual == 5
+    assert captured.value.actual == 6
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone() == (1,)
 

@@ -153,6 +153,11 @@ def test_configuration_rejects_unsafe_cross_field_combinations() -> None:
     with pytest.raises(ValidationError, match="both allowed and forbidden"):
         RevanentConfig.model_validate(document)
 
+    document = _config_document()
+    document["workspace"]["root"] = "safe/.git/worktrees"
+    with pytest.raises(ValidationError, match=r"cannot be located under .git"):
+        RevanentConfig.model_validate(document)
+
 
 def test_configuration_normalizes_windows_separators_and_is_immutable() -> None:
     document = _config_document()

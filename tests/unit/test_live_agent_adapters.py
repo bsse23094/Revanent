@@ -438,6 +438,31 @@ def test_codex_jsonl_rejects_malformed_or_incoherent_streams(text: str) -> None:
         parse_codex_jsonl(text)
 
 
+def test_codex_jsonl_uses_final_completed_agent_message() -> None:
+    expected = make_response(AgentRole.REVIEWER).model_dump_json()
+    text = "\n".join(
+        (
+            json.dumps({"type": "thread.started"}),
+            json.dumps({"type": "turn.started"}),
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "bounded interim message"},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": expected},
+                }
+            ),
+            json.dumps({"type": "turn.completed"}),
+        )
+    )
+
+    assert parse_codex_jsonl(text).decode("utf-8") == expected
+
+
 @pytest.mark.parametrize(
     "text",
     [

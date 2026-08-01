@@ -192,7 +192,14 @@ is no network pricing lookup or bundled current rate table.
 The intent-before-launch protocol cannot distinguish a crash immediately before process
 launch from a crash immediately after possible writes. Revanent therefore claims durable
 at-most-once initiation plus fail-closed reconciliation, not exactly-once external
-execution. An operator-facing recovery decision and resume workflow remain P6-002. SQLite
+execution. P6-002-C1 exposes that recovery state through typed resume/status/cancel workflows;
+resume never replays ambiguous mutating work and status is read-only. Migration 5 binds every
+runtime Run to immutable full repository identity plus deterministic worktree path/ID/branch
+evidence. Runtime operations rediscover that identity and verify live active ownership before
+recovery; sibling-prefix, replacement, link/junction, wrong-repository, and wrong-worktree cases
+fail closed without reconciliation or cleanup. Task files are bounded regular no-follow inputs;
+their prose never becomes command, network, publication, repair, or approval authority. Status
+projects no bodies and reports contradictory evidence without repairing it. SQLite
 revision guards stop cooperative coordinators but are not a distributed lock against a
 malicious same-user process. The small interval between the final state/worktree check and
 external launch remains a check/use race; stable evidence explains it but cannot remove it.
@@ -200,11 +207,11 @@ SQLite `BEGIN IMMEDIATE` serializes supported local writers; it is not distribut
 coordination. Provider hard stopping cannot be guaranteed when a CLI lacks a finite token or
 cost ceiling, so a configured hard external budget fails closed before invocation.
 
-The production `LocalEvidenceCollector` wiring is not part of P4-002; future CLI
-composition must construct a reviewed collector for scope, generated/lock files, artifacts,
-cleanliness, read-only identity, and reconciliation facts. The library contract and gate
-fail closed, but unsafe caller-supplied local evidence would violate the construction
-boundary. Later composition must not infer those facts from provider prose or telemetry.
+P6-002-C1 production composition deliberately supplies conservative local approval evidence with
+`scope_justified=False`. Consequently a production run cannot fabricate approval and may block even
+when provider review is favorable. P6-002-C2 or later may add a reviewed collector for scope,
+generated/lock files, artifacts, and cleanliness, but must not infer those facts from provider prose
+or telemetry. Fake/local tests can reach `APPROVED` only with explicitly injected complete evidence.
 
 Command artifact verification is not cryptographic and remains subject to replacement
 after inspection by another same-user process. Review read-only flags reduce authority
@@ -247,3 +254,46 @@ manual recovery. UNC repositories/worktree roots are rejected by default; explic
 authorized UNC operation and POSIX branches were not executed in the local Windows
 completion environment. Repository-configured external checkout filters are refused,
 which is safer but excludes some legitimate filter-based repositories.
+
+## P6 initialization and diagnostic boundary
+
+Project YAML, target paths, provider help/version output, and the host environment remain
+untrusted. P6 accepts only a bounded regular root-level configuration through the existing safe
+loader, retains no secret values, and has no general environment overlay. Initialization rejects
+links/junctions, path escapes, `.git` destinations, unignored in-tree owned roots, conflicting
+or special files, and unexpected owned-root entries. It uses no-clobber creation and never edits
+`.gitignore`, Git configuration, branches, commits, worktrees, or run state.
+
+Doctor and provider detection use a filtered baseline environment and controlled executable
+allowlist with repository-local paths excluded. They render only bounded normalized version and
+reason facts. They do not use credentials, invoke a model, access a network, trust raw provider
+output, or print tracebacks for typed failures. Strict mode changes exit semantics only; it does
+not grant provider authority.
+
+## P7 live-certification authorization
+
+Installed credentials or executable presence never selects a live test. Default pytest excludes the
+`live` marker. Explicit selection additionally requires a certification switch, exact acknowledgement,
+one role-specific model, and finite call/time/token/cost ceilings. Production runtime requires
+separate network, OpenCode-builder, Codex-reviewer, and Codex-repair-write decisions. Provider stdin
+is disabled in the shared controlled runner unless that composition explicitly authorizes it.
+
+Live fixtures exist outside the Revanent checkout and use an isolated source repository plus owned
+worktree. Certificate metadata excludes prompts, bodies, output, environment, credentials, and raw
+errors. Provider-managed networking remains outside Revanent; no direct HTTP, SDK, authentication,
+telemetry upload, pricing, or Git publication surface was added.
+
+## P6-002 evidence-report boundary
+
+Report requests are read-only inspection. The assembler may read canonical durable evidence but may
+not transition, reconcile, settle, invoke a provider/validator, mutate Git/worktrees, create
+approval evidence, or repair storage. It preserves contradiction reason codes and refuses to call
+an APPROVED Run complete without independent ApprovalGate, validation, review, correlation, and
+ambiguity evidence.
+
+JSON is bounded canonical metadata and Markdown is an escaped projection of it. Neither includes
+task/context/source/provider/command bodies, credentials, raw environment values, authorization
+headers, raw exceptions, or raw output. Explicit report output is confined to the configured report
+root; traversal, absolute, `.git`, link/reparse, special, and differing-collision paths are refused.
+The SHA-256 digest is integrity metadata, not a signature. Local atomic creation reduces but cannot
+eliminate host-authority check/use races; report output never gains authority over workflow state.

@@ -244,6 +244,25 @@ class LocalGitRepository:
             worktrees=worktrees,
         )
 
+    def is_path_ignored(self, repository_root: Path, relative_path: Path) -> bool:
+        """Check one repository-relative candidate through the frozen read-only Git surface."""
+        identity = self.discover(repository_root)
+        try:
+            self._paths.resolve_relative(
+                identity.worktree_root,
+                relative_path,
+                must_exist=False,
+            )
+        except WorkingDirectoryPolicyError as error:
+            raise GitPathPolicyError("ignored-path candidate is outside the repository") from error
+        probe = relative_path / ".revanent-ignore-probe"
+        result = self._run(
+            identity.worktree_root,
+            ("check-ignore", "--quiet", "--no-index", "--", str(probe)),
+            expected_exit_codes=(0, 1),
+        )
+        return result.exit_code == 0
+
     def create_worktree(self, request: WorktreeCreationRequest) -> WorktreeCreationResult:
         """Create and verify one branch/worktree while preserving partial evidence."""
         source = self.inspect(request.source_path)

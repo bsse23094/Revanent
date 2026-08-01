@@ -76,8 +76,18 @@ Python `Decimal` arithmetic remain exact. Metadata contains no prompts, context 
 raw output, credentials, or environment values. Schema-3 databases migrate without changing
 existing run, event, orchestration, or context evidence.
 
+## P6-002-C1 extension
+
+Forward migration 5 adds the one-to-one `runtime_bindings` table with a Run foreign key, full
+strict schema-v1 repository identity JSON, deterministic unique worktree ID, normalized
+repository-relative target, branch, and UTC creation evidence. Update/delete triggers make the
+binding immutable. `create_bound_run` inserts the revision-zero Run and binding in one transaction;
+any binding/correlation failure rolls back both before orchestration can launch. Existing schema-4
+library Runs remain readable through `create_run`, while runtime application operations require a
+binding and report its absence as corrupt evidence rather than inventing identity.
+
 ## Status
 
-Extended through SQLite schema version 4 by P5-002 on 2026-07-31.
+Extended through SQLite schema version 5 by P6-002-C1 on 2026-08-01.
 
 Accepted — 2026-07-29; SQLite portion implemented and verified in P1-002 on 2026-07-30.

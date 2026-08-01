@@ -177,8 +177,13 @@ def executable_unavailable(result: CommandResult) -> bool:
     )
 
 
-def deterministic_prompt(request: AgentRequest, *, mode: str) -> bytes:
-    """Build a bounded deterministic prompt from authorized request context only."""
+def deterministic_prompt(
+    request: AgentRequest,
+    *,
+    mode: str,
+    identity: AgentProviderIdentity,
+) -> bytes:
+    """Build a bounded prompt with the exact trusted response identity and schema."""
     document = {
         "authority": {
             "mode": mode,
@@ -209,6 +214,8 @@ def deterministic_prompt(request: AgentRequest, *, mode: str) -> bytes:
             "claims_are_unverified": True,
             "no_markdown_fence": True,
             "preserve_all_request_correlation_fields_exactly": True,
+            "expected_identity": identity.model_dump(mode="json"),
+            "json_schema": AgentResponse.model_json_schema(),
         },
     }
     encoded = json.dumps(

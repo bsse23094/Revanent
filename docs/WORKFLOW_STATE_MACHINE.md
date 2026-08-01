@@ -4,6 +4,10 @@ The domain state machine is the only authority for run-state changes. Adapters m
 report outcomes but cannot mutate state. Every accepted transition produces an event;
 every invalid transition raises a typed error and performs no side effect.
 
+Evidence reports are read-only projections and are not state-machine transitions. They may mark
+evidence incomplete or invalid but never reconcile, settle, cancel, approve, repair, or otherwise
+alter a Run.
+
 ## States
 
 - `CREATED`: durable task accepted, no planning side effect started.
@@ -135,3 +139,8 @@ duration, and measured overage enters `FAILED` with `RUN_DURATION_EXHAUSTED` bef
 An unresolved prior reservation enters `BLOCKED`. Cancellation remains `CANCELLED`; telemetry
 availability never grants write, repair, review, or approval authority. Outcome persistence
 precedes settlement, and restart settlement does not reinvoke or create a new state edge.
+
+P6-001 adds no workflow transition. `init`, `config validate`, `doctor`, and `agents detect`
+may inspect repository/configuration/provider capability facts but cannot create a run, worktree,
+attempt, event, reservation, report, approval, or provider invocation. User-facing stateful
+workflow selection remains P6-002.

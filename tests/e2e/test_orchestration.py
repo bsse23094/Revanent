@@ -16,6 +16,11 @@ from revanent.agents import (
     ScriptedResponseOutcome,
     agent_request_digest,
 )
+from revanent.application.workflows import (
+    RunStatusRequest,
+    StatusApplicationService,
+    StatusComposition,
+)
 from revanent.commands import CancellationSource
 from revanent.context import (
     ContextDiscoveryInput,
@@ -84,6 +89,7 @@ from revanent.ports import (
     ReservationStatus,
     RetryDisposition,
     ReviewerPayload,
+    RuntimeBinding,
     ScenarioId,
     SideEffectState,
     StorageOperationError,
@@ -101,6 +107,7 @@ from revanent.ports import (
     ValidationPlan,
     ValidationPlanId,
     ValidationPlanResult,
+    ValidationStatus,
     WorkspaceKind,
     WorkspaceReference,
     WorktreeCleanupResult,
@@ -467,6 +474,8 @@ def _harness(
     clock_start: datetime = NOW,
     run: Run | None = None,
     context_selector: ContextSelector | None = None,
+    bind_runtime: bool = False,
+    persist_run: bool = True,
 ) -> tuple[
     OrchestrationService,
     OrchestrationRequest,
@@ -479,13 +488,13 @@ def _harness(
     ScriptedCommandRunner,
 ]:
     source = (tmp_path / "source").resolve()
-    target = (tmp_path / "owned-worktree").resolve()
+    target = (source / ".revanent" / "worktrees" / RUN_ID.root).resolve()
     source.mkdir()
-    target.mkdir()
+    target.mkdir(parents=True)
     (source / "src").mkdir()
     (source / "src" / "context.py").write_text("VALUE = 1\n", encoding="utf-8")
     active_run = run or _run()
-    worktree_id = WorktreeId(f"wt_{'c' * 32}")
+    worktree_id = WorktreeId("wt_" + RUN_ID.root.removeprefix("run_"))
     worktree = WorktreeCreationRequest(
         source_path=source,
         target_path=target,
@@ -620,8 +629,22 @@ def _harness(
     )
     repository = SQLiteRunRepository(tmp_path / "state.db")
     repository.initialize()
-    repository.create_run(active_run)
     git = FakeGitRepository(source, target, worktree_id)
+    if persist_run:
+        if bind_runtime:
+            repository.create_bound_run(
+                active_run,
+                RuntimeBinding(
+                    run_id=active_run.id,
+                    repository=git.record.repository,
+                    worktree_id=worktree_id,
+                    worktree_relative_path=target.relative_to(source).as_posix(),
+                    branch_name=git.record.branch_name,
+                    created_at=active_run.created_at,
+                ),
+            )
+        else:
+            repository.create_run(active_run)
     commands = ScriptedCommandRunner(validation_statuses)
     service = OrchestrationService(
         runs=repository,
@@ -658,6 +681,92 @@ def _approved_review() -> ReviewResult:
         verdict=ReviewVerdict.APPROVED,
         summary="Structured reviewer evidence approves the validated change.",
     )
+
+
+def test_runtime_status_projects_approved_evidence_read_only(tmp_path: Path) -> None:
+    service, request, repository, git, *_ = _harness(
+        tmp_path,
+        validation_statuses=(CommandStatus.SUCCESS,),
+        review_results=(_approved_review(),),
+        bind_runtime=True,
+    )
+    approved = service.execute(request)
+    composition = StatusComposition(
+        runs=repository,
+        telemetry=TelemetryService(repository),
+        git=git,
+        repository_root=request.worktree.source_path,
+    )
+    before_run = repository.get_run(RUN_ID)
+    before_events = repository.list_events(RUN_ID)
+    before_records = repository.list_orchestration_records(RUN_ID)
+    before_usage = repository.list_usage_records(RUN_ID)
+    before_reservations = repository.list_reservations(RUN_ID)
+
+    first = StatusApplicationService(composition).status(RunStatusRequest(run_id=RUN_ID))
+    second = StatusApplicationService(composition).status(RunStatusRequest(run_id=RUN_ID))
+
+    assert approved.status is OrchestrationStatus.APPROVED
+    assert first == second
+    assert first.state is RunState.APPROVED
+    assert first.repository_id == git.record.repository.repository_id
+    assert first.context.manifest_id is not None
+    assert first.validation.status is ValidationStatus.PASSED
+    assert first.review.approval_gate_present is True
+    assert first.latest_event is not None
+    assert first.latest_event.destination is RunState.APPROVED
+    assert first.reason_code == "approved"
+    assert first.execution_status == "TERMINAL"
+    assert first.worktree_reference is not None
+    assert not Path(first.worktree_reference).is_absolute()
+    assert any(item.unavailable_count > 0 for item in first.usage)
+    assert first.attempts.builder == 1
+    assert first.evidence_complete is True
+    assert repository.get_run(RUN_ID) == before_run
+    assert repository.list_events(RUN_ID) == before_events
+    assert repository.list_orchestration_records(RUN_ID) == before_records
+    assert repository.list_usage_records(RUN_ID) == before_usage
+    assert repository.list_reservations(RUN_ID) == before_reservations
+
+
+def test_runtime_status_rejects_terminal_run_with_missing_required_outcome(
+    tmp_path: Path,
+) -> None:
+    service, request, repository, git, *_ = _harness(
+        tmp_path,
+        validation_statuses=(CommandStatus.SUCCESS,),
+        review_results=(_approved_review(),),
+        bind_runtime=True,
+    )
+    assert service.execute(request).status is OrchestrationStatus.APPROVED
+    with sqlite3.connect(tmp_path / "state.db") as connection:
+        connection.execute("DROP TRIGGER trg_orchestration_no_delete")
+        connection.execute(
+            "DELETE FROM orchestration_records "
+            "WHERE run_id = ? AND attempt_kind = 'REVIEW' AND record_stage = 'OUTCOME'",
+            (RUN_ID.root,),
+        )
+        connection.execute(
+            "CREATE TRIGGER trg_orchestration_no_delete "
+            "BEFORE DELETE ON orchestration_records "
+            "BEGIN SELECT RAISE(ABORT, 'orchestration records are append-only'); END"
+        )
+    before = repository.get_run(RUN_ID)
+
+    result = StatusApplicationService(
+        StatusComposition(
+            runs=repository,
+            telemetry=TelemetryService(repository),
+            git=git,
+            repository_root=request.worktree.source_path,
+        )
+    ).status(RunStatusRequest(run_id=RUN_ID))
+
+    assert result.action_status.value == "INVALID_EVIDENCE"
+    assert "approval_gate_missing" in result.contradiction_codes
+    assert "terminal_incomplete_attempt" in result.contradiction_codes
+    assert result.failure is not None and result.failure.code == "invalid_evidence"
+    assert repository.get_run(RUN_ID) == before
 
 
 def test_builder_validation_review_happy_path_reaches_approved(tmp_path: Path) -> None:

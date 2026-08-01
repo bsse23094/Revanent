@@ -30,6 +30,7 @@ from revanent.ports.orchestration import (
     OrchestrationRecord,
     RecordWriteResult,
 )
+from revanent.ports.runtime import RuntimeBinding
 from revanent.ports.storage import (
     ConcurrentRunUpdateError,
     CorruptStorageError,
@@ -60,7 +61,7 @@ from revanent.ports.telemetry import (
     UsageRecord,
 )
 
-STORAGE_SCHEMA_VERSION = 4
+STORAGE_SCHEMA_VERSION = 5
 DOMAIN_MODEL_VERSION = 1
 
 
@@ -394,6 +395,38 @@ MIGRATIONS = (
             """,
         ),
     ),
+    Migration(
+        version=5,
+        name="runtime_repository_bindings",
+        statements=(
+            """
+            CREATE TABLE runtime_bindings (
+                run_id TEXT PRIMARY KEY,
+                repository_id TEXT NOT NULL
+                    CHECK (length(repository_id) = 69 AND substr(repository_id, 1, 5) = 'repo_'),
+                worktree_id TEXT NOT NULL UNIQUE
+                    CHECK (length(worktree_id) = 35 AND substr(worktree_id, 1, 3) = 'wt_'),
+                payload_version INTEGER NOT NULL CHECK (payload_version = 1),
+                payload_json TEXT NOT NULL CHECK (length(payload_json) BETWEEN 2 AND 262144)
+                    CHECK (json_valid(payload_json))
+                    CHECK (json_extract(payload_json, '$.run_id') = run_id)
+                    CHECK (json_extract(payload_json, '$.repository.repository_id') = repository_id)
+                    CHECK (json_extract(payload_json, '$.worktree_id') = worktree_id)
+                    CHECK (json_extract(payload_json, '$.schema_version') = payload_version),
+                CONSTRAINT fk_runtime_binding_run FOREIGN KEY (run_id)
+                    REFERENCES runs(run_id) ON DELETE RESTRICT
+            )
+            """,
+            """
+            CREATE TRIGGER trg_runtime_bindings_no_update BEFORE UPDATE ON runtime_bindings
+            BEGIN SELECT RAISE(ABORT, 'runtime bindings are immutable'); END
+            """,
+            """
+            CREATE TRIGGER trg_runtime_bindings_no_delete BEFORE DELETE ON runtime_bindings
+            BEGIN SELECT RAISE(ABORT, 'runtime bindings are immutable'); END
+            """,
+        ),
+    ),
 )
 
 _REQUIRED_OBJECTS = {
@@ -418,6 +451,9 @@ _REQUIRED_OBJECTS = {
     "trg_budget_reservations_no_delete": "trigger",
     "trg_budget_settlements_no_update": "trigger",
     "trg_budget_settlements_no_delete": "trigger",
+    "runtime_bindings": "table",
+    "trg_runtime_bindings_no_update": "trigger",
+    "trg_runtime_bindings_no_delete": "trigger",
 }
 _REQUIRED_COLUMNS = {
     "schema_migrations": {"version", "name", "applied_at"},
@@ -474,6 +510,13 @@ _REQUIRED_COLUMNS = {
         "payload_json",
     },
     "budget_settlements": {"reservation_id", "payload_version", "payload_json"},
+    "runtime_bindings": {
+        "run_id",
+        "repository_id",
+        "worktree_id",
+        "payload_version",
+        "payload_json",
+    },
 }
 _TABLE_INFO_QUERIES = {
     "schema_migrations": "PRAGMA table_info(schema_migrations)",
@@ -483,6 +526,7 @@ _TABLE_INFO_QUERIES = {
     "usage_records": "PRAGMA table_info(usage_records)",
     "budget_reservations": "PRAGMA table_info(budget_reservations)",
     "budget_settlements": "PRAGMA table_info(budget_settlements)",
+    "runtime_bindings": "PRAGMA table_info(runtime_bindings)",
 }
 
 
@@ -586,6 +630,90 @@ class SQLiteRunRepository:
         except sqlite3.DatabaseError:
             raise StorageOperationError("create run") from None
         return StoredRun(run=run, revision=0)
+
+    def create_bound_run(self, run: Run, binding: RuntimeBinding) -> StoredRun:
+        """Atomically persist a revision-zero Run and its immutable repository binding."""
+        if run.state is not RunState.CREATED:
+            raise InvalidInitialRunStateError(run.id)
+        if binding.run_id != run.id:
+            raise StorageOperationError("runtime binding correlation mismatch")
+        try:
+            with self._connect(read_only=False, require_existing=True) as connection:
+                try:
+                    with self._transaction(connection, write=True):
+                        self._assert_current_schema(connection)
+                        connection.execute(
+                            """
+                            INSERT INTO runs (
+                                run_id, revision, model_version, current_state,
+                                created_at, updated_at, run_payload_json
+                            ) VALUES (?, 0, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                run.id.root,
+                                run.schema_version,
+                                run.state.value,
+                                _timestamp(run.created_at),
+                                _timestamp(run.updated_at),
+                                run.model_dump_json(),
+                            ),
+                        )
+                        connection.execute(
+                            """
+                            INSERT INTO runtime_bindings (
+                                run_id, repository_id, worktree_id, payload_version, payload_json
+                            ) VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (
+                                run.id.root,
+                                binding.repository.repository_id,
+                                binding.worktree_id.root,
+                                binding.schema_version,
+                                binding.model_dump_json(),
+                            ),
+                        )
+                except sqlite3.IntegrityError:
+                    raise StorageOperationError("create bound run") from None
+        except StorageError:
+            raise
+        except sqlite3.DatabaseError:
+            raise StorageOperationError("create bound run") from None
+        return StoredRun(run=run, revision=0)
+
+    def get_runtime_binding(self, run_id: RunId) -> RuntimeBinding:
+        """Load immutable repository identity evidence without changing access state."""
+        try:
+            with (
+                self._connect(read_only=True, require_existing=True) as connection,
+                self._transaction(connection, write=False),
+            ):
+                self._assert_current_schema(connection)
+                row = connection.execute(
+                    "SELECT payload_json FROM runtime_bindings WHERE run_id = ?",
+                    (run_id.root,),
+                ).fetchone()
+                if row is None:
+                    exists = connection.execute(
+                        "SELECT 1 FROM runs WHERE run_id = ?", (run_id.root,)
+                    ).fetchone()
+                    if exists is None:
+                        raise RunNotFoundError(run_id)
+                    raise CorruptStorageError("run has no runtime repository binding")
+                try:
+                    binding = RuntimeBinding.model_validate_json(
+                        _row_str(row, "payload_json", "runtime binding payload")
+                    )
+                except ValidationError:
+                    raise CorruptStorageError(
+                        "runtime repository binding failed validation"
+                    ) from None
+                if binding.run_id != run_id:
+                    raise CorruptStorageError("runtime repository binding correlation mismatch")
+                return binding
+        except StorageError:
+            raise
+        except sqlite3.DatabaseError:
+            raise StorageOperationError("get runtime binding") from None
 
     def get_run(self, run_id: RunId) -> StoredRun:
         """Load and fully validate one run from a consistent read transaction."""

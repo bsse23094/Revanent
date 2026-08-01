@@ -1,5 +1,20 @@
 # Operations
 
+## P6 setup and inspection
+
+Use `revanent init --repository PATH` only for a clean non-bare repository whose `.revanent`
+root is already ignored. Inspect the plan shown by the command before resolving a refusal; never
+delete a conflicting file, stale temporary directory, or user-created root merely to make init
+pass. A repeat init reuses identical generated configuration and compatible owned directories;
+it does not reset databases, erase reports, rewrite configuration, or edit `.gitignore`.
+
+Use `revanent config validate --repository PATH` before later workflow wiring. It is read-only
+and checks the sole root-level `revanent.yaml` and effective schema-v1 paths. Use
+`revanent doctor` for local runtime diagnostics and add `--repository PATH` to include repository
+and configuration checks. Missing OpenCode is expected as optional `UNAVAILABLE`; use `--strict`
+when that gap should block setup. `revanent agents detect` reports P3-compatible provider
+surfaces only; it never authenticates or invokes a model. See `CLI_REFERENCE.md` for exit codes.
+
 ## Agent contracts and deterministic fake
 
 P3-001 exposes a library-level `AgentAdapter`; P4-002 orchestration invokes it, but no CLI
@@ -56,6 +71,12 @@ the owned worktree later. Provider-returned paths are not trusted artifacts. Exa
 values must be configured in both runner redaction and parser settings; overflow artifacts
 are suppressed when such values are present. Live/model calls remain prohibited by
 default and belong to explicit P7-001 opt-in coverage.
+
+P7 live tests remain excluded from normal pytest. Select one role at a time with a live marker and
+specific test, `--live-certify`, the exact acknowledgement, an explicit role model, and finite
+timeout/token/cost ceilings. Each test permits one call and creates its own temporary source
+repository plus owned worktree outside this checkout. Missing or incompatible providers fail the
+requested certification; they are never installed or substituted.
 
 ## Controlled commands
 
@@ -140,8 +161,9 @@ or continue after a required-evidence failure.
 
 ## Bounded orchestration and repair
 
-P4-002 exposes a library `OrchestrationService`; P6-002 still owns user-facing
-run/resume/status/report commands. Construct the service only with one `RunRepository` and
+P4-002 exposes a library `OrchestrationService`; P6-002 now owns user-facing
+run/resume/status/cancel/report commands. Construct the service only with one
+`RunRepository` and
 matching `OrchestrationJournal`, a `GitRepository`, permission-separated agent adapters,
 `ValidationExecutor`, `ReviewGate`, reviewed `LocalEvidenceCollector`, UTC clock, and stable
 ID factory. Do not pass concrete SQLite/provider/Git implementations into domain models.
@@ -186,7 +208,8 @@ unblock continuation.
 
 ## Safe Git worktrees
 
-P2-002 is a library boundary; no CLI creates or removes a worktree yet. Construct a
+P2-002 is the Git library boundary. P6-002-C1 `run`/`resume` may create a worktree only through the
+coordinator; no CLI removes or cleans one. Construct a
 `LocalGitRepository` with the shared controlled runner, its matching `PathPolicy`, an
 already-existing approved worktree root, an already-existing dedicated ownership-state
 directory, and optional `ProtectedBranchPolicy`. The runner must authorize the simple
@@ -252,7 +275,7 @@ writers for one local database; do not use it as distributed coordination.
 
 There is no current price fetch or billing reconciliation. Decimal estimated cost, if a future
 reviewed estimator supplies it, is an estimate only. Backups must include migration 4 telemetry
-tables with run/event/orchestration evidence.
+tables and the migration 5 runtime binding table with run/event/orchestration evidence.
 
 ## Durable state
 
@@ -261,7 +284,7 @@ CLI currently selects or initializes that path. Initialization creates the datab
 file intentionally. Parent creation is disabled by default and must be requested
 explicitly. Read operations use SQLite read-only mode and never create an absent file.
 
-SQLite schema version 4 is recorded in `schema_migrations`. Repeated initialization validates
+SQLite schema version 5 is recorded in `schema_migrations`. Repeated initialization validates
 and preserves the existing history. A newer, incomplete, malformed, or corrupt
 database is rejected without deletion, truncation, migration downgrade, or automatic
 repair. Operators should preserve the file for diagnosis. Future migrations append to
@@ -275,13 +298,17 @@ one immutable, per-run sequenced event atomically. Equal event timestamps are or
 by sequence. Migration 2 adds append-only per-run orchestration intent/outcome/
 reconciliation records with strict correlation and unique attempt/stage boundaries. Migration
 3 admits metadata-only context outcomes. Migration 4 adds append-only usage, reservations, and
-settlements. Stale revisions fail without writing; an event/attempt/telemetry insertion failure
-rolls back and launches no later side effect.
+settlements. Migration 5 adds the immutable one-to-one runtime repository/worktree binding; new
+runtime Runs and bindings commit atomically. Stale revisions fail without writing; an
+event/attempt/telemetry/binding insertion failure rolls back and launches no later side effect.
 
 Back up the SQLite file only while no writer is active. Multi-process behavior beyond
-SQLite writer serialization and revision rejection is not claimed. No CLI resume,
-database export, or general durable run-artifact store exists yet. Library worktree
-verification and conservative interruption reconciliation exist in P4-002; Phase 6 must
-expose them without automatic destructive recovery. P2-001 command overflow references
+SQLite writer serialization and revision rejection is not claimed. P6-002-C1 supplies CLI
+run/resume/status/cancel operations. Every operation must be issued against the bound repository;
+after workspace creation it also requires the active live-verified owned worktree. Mismatch blocks
+without recovery or cleanup. Resume reuses trusted durable outcomes and settlements, while
+ambiguous initiation remains unresolved. Status is read-only and report artifacts remain
+unavailable. No database export or general durable run-artifact store exists yet. P2-001 command
+overflow references
 remain adapter-boundary types; wiring them into a general `.revanent/runs/<run-id>/`
 artifact store remains later work.

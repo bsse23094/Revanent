@@ -33,8 +33,15 @@ dev = [
 packages = ["src/revanent"]
 
 [tool.pytest.ini_options]
-addopts = "-ra --strict-config --strict-markers"
+addopts = "-ra --strict-config --strict-markers -m 'not live'"
 testpaths = ["tests"]
+markers = [
+  "live: explicitly authorized costed provider certification",
+  "live_opencode: OpenCode builder certification",
+  "live_codex: Codex reviewer or repair certification",
+  "network: provider-managed network access is required",
+  "costed: the provider may charge for this invocation",
+]
 
 [tool.coverage.run]
 branch = true

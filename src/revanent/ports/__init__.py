@@ -136,6 +136,24 @@ from revanent.ports.orchestration import (
     canonical_orchestration_bytes,
     orchestration_digest,
 )
+from revanent.ports.reporting import (
+    EVIDENCE_REPORT_SCHEMA_VERSION,
+    EvidenceReport,
+    EvidenceReportManifest,
+    EvidenceReportRequest,
+    EvidenceReportStatus,
+    ReportArtifact,
+    ReportArtifactWriter,
+    ReportArtifactWriteResult,
+    ReportFailure,
+    ReportFormat,
+)
+from revanent.ports.runtime import (
+    RUNTIME_BINDING_SCHEMA_VERSION,
+    RuntimeBinding,
+    RuntimeIdentityPort,
+    RuntimeRepository,
+)
 from revanent.ports.storage import (
     ConcurrentRunUpdateError,
     CorruptStorageError,
@@ -202,7 +220,9 @@ from revanent.ports.validation import (
 )
 
 __all__ = [
+    "EVIDENCE_REPORT_SCHEMA_VERSION",
     "ORCHESTRATION_SCHEMA_VERSION",
+    "RUNTIME_BINDING_SCHEMA_VERSION",
     "TELEMETRY_SCHEMA_VERSION",
     "VALIDATION_SCHEMA_VERSION",
     "AdapterId",
@@ -265,6 +285,10 @@ __all__ = [
     "EnvironmentOverrides",
     "EnvironmentPolicyError",
     "EnvironmentVariable",
+    "EvidenceReport",
+    "EvidenceReportManifest",
+    "EvidenceReportRequest",
+    "EvidenceReportStatus",
     "ExecutablePolicyError",
     "ExecutableUnavailableError",
     "ExpectedAgentCapabilities",
@@ -314,6 +338,11 @@ __all__ = [
     "RepairReason",
     "RepairStrategy",
     "RepairerPayload",
+    "ReportArtifact",
+    "ReportArtifactWriteResult",
+    "ReportArtifactWriter",
+    "ReportFailure",
+    "ReportFormat",
     "RepositoryIdentity",
     "RepositoryPath",
     "RepositorySnapshot",
@@ -324,6 +353,9 @@ __all__ = [
     "ReviewerPayload",
     "RunNotFoundError",
     "RunRepository",
+    "RuntimeBinding",
+    "RuntimeIdentityPort",
+    "RuntimeRepository",
     "ScenarioId",
     "SchemaStatus",
     "ScopePath",

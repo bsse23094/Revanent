@@ -80,6 +80,29 @@ limits, absolute/traversing or repository-wide allowed paths, duplicate commands
 conflicting paths, and approval-free push/merge settings are rejected explicitly.
 Configuration errors summarize locations and rules without echoing input values.
 
+## P6 setup and inspection application boundary
+
+`revanent.application` owns typed setup, configuration-validation, doctor, and provider-
+detection use cases. The Typer CLI adapts paths/options and renders typed results; it imports no
+SQLite, concrete Git, subprocess, command runner, or provider adapter. Application composition
+creates the existing controlled runner only from a selected baseline environment and excludes the
+target repository from executable search. Repository discovery and ignored-root checks use the
+existing `LocalGitRepository` inspection surface rather than raw Git commands.
+
+Initialization first creates an immutable plan, then executes only approved create/reuse actions.
+It owns only the canonical root config and `.revanent` roots, uses create-exclusive linking for
+the completed YAML file, and preserves partial compatible resources for idempotent retry. P6-001
+does not wire orchestration, run storage, worktree lifecycle, provider invocation, or reports.
+P6-002 adds runtime and read-only report composition through separate typed application services.
+The report service shares the status projection, makes no workflow call, and passes one immutable
+evidence object to a pure JSON/Markdown renderer and report-root writer. See ADR-0012 and ADR-0013.
+
+P7 live composition is default-off. Runtime provider stdin is authorized only when an explicit
+workflow request, network policy, OpenCode-builder policy, and Codex-reviewer policy all agree;
+Codex repair additionally requires its existing separate write authorization. The certification
+harness uses strict role-scoped finite authorization contracts and disposable repositories. It adds
+no provider SDK, HTTP client, remote state, pricing lookup, credential surface, or workflow bypass.
+
 ## Controlled command boundary
 
 `revanent.ports.commands` owns immutable version-1 `CommandRequest`, `CommandResult`,
@@ -261,9 +284,11 @@ automatic continuation. Reviewer cancellation has terminal cancellation preceden
 the review gate's conservative blocked classification. This is at-most-once initiation
 with durable reconciliation, not exactly-once execution.
 
-The implemented SQLite schema version 4 has seven tables: ordered migration history,
-revisioned current runs, append-only run events/orchestration records, and append-only
-usage records, budget reservations, and budget settlements.
+The implemented SQLite schema version 5 has eight tables: ordered migration history,
+revisioned current runs, immutable runtime repository/worktree bindings, append-only run
+events/orchestration records, and append-only usage records, budget reservations, and budget
+settlements. Migration 5 adds the one-to-one binding and immutable update/delete triggers;
+`create_bound_run` commits the revision-zero Run and binding in one transaction.
 Complete bounded domain JSON is
 stored alongside normalized identity/version/state/timestamp/order columns and is
 always reloaded through canonical Pydantic validation. Database checks enforce JSON
@@ -313,8 +338,22 @@ reuses persisted outcomes without provider/validator replay. Missing trusted out
 P4-002 proves close/reopen outcome reuse, exact worktree-creation reconciliation (including
 another-run refusal), in-flight reviewer cancellation, refusal to replay incomplete
 mutating work, stale-coordinator rejection, and rollback before launch.
-P6-002 still owns the user-facing resume/status/report command and recovery UX; artifact
-integrity beyond existing typed references remains later work.
+P6-002-C1 adds typed application services for `run`, `resume`, `status`, and `cancel`. The CLI
+only adapts options and renders results. Runtime composition wires port contracts explicitly and
+validates required provider capability before persistence. Atomic Run/binding creation and reload
+precede `OrchestrationService.execute`; resume verifies identity and delegates reconciliation before
+continuation. Repository identity is full typed Git evidence rather than a path prefix. Once durable
+workspace evidence exists, the application additionally verifies the active ownership record and
+live worktree repository/path/branch/ID correlations. Unsafe mismatch blocks without orchestration
+writes.
+
+Status uses a smaller Git/read-only-repository/telemetry composition. Its schema-v1 projection is
+derived from immutable durable evidence and cannot probe providers, reconcile, settle, transition,
+or invoke work. Repeated calls are canonically equivalent and contradiction detection reports
+`INVALID_EVIDENCE` without repair. Cancellation delegates its transition to the coordinator and
+preserves all evidence and ambiguity. Real-SQLite optimistic boundaries give concurrent resumes one
+side-effect owner; this remains durable at-most-once initiation, not exactly-once execution. Report
+artifacts and cleanup remain C2 work.
 
 ## Trust boundaries
 
